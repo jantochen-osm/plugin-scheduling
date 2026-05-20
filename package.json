@@ -1,0 +1,13 @@
+{
+  "name": "@osm/plugin-scheduling",
+  "version": "0.1.0",
+  "main": "dist/server/index.js",
+  "peerDependencies": {
+    "@nocobase/client": "2.x",
+    "@nocobase/server": "2.x"
+  },
+  "description": "OSM Scheduling Engine - Stage 1 MVP (EE Assembly 3F3~3F6)",
+  "displayName": "OSM 排产引擎",
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -1,0 +1,13 @@
+{
+  "Run Scheduling": "执行排产",
+  "Scheduling Results": "排产结果",
+  "Scheduling Exceptions": "排产异常",
+  "Run": "开始排产",
+  "Scheduling completed": "排产完成",
+  "Orders scheduled": "已排产订单",
+  "Exceptions": "异常",
+  "Daily Plan": "每日排产",
+  "Scheduling Engine": "排产引擎",
+  "Scheduling started...": "排产已启动...",
+  "Scheduling failed": "排产失败"
+}
