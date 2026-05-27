@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
   BlockModel,
   ActionModel,
@@ -14,37 +15,56 @@ import {
 import React, { useState } from 'react';
 
 // ============================================================
-// 排产面板子组件（用 hooks 管理状态）
+// 排产面板子组件
 // ============================================================
 function SchedulingPanel({ api }: { api: any }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [strategy, setStrategy] = useState<string>('ESG'); // ESG | EE | ''
 
   const handleRun = () => {
-    if (!api) {
-      setError('无法获取 API 客户端');
-      return;
-    }
+    if (!api) { setError('No API client'); return; }
     setLoading(true);
     setError(null);
-    api.resource('scheduling').run()
+    const params: any = {};
+    if (strategy) params.strategy = strategy;
+    api.resource('scheduling').run({ values: params })
       .then((res: any) => {
         setResult(res?.data?.data || res?.data || {});
       })
       .catch((e: any) => {
-        setError(e.message || '排产失败');
+        setError(e.message || 'Scheduling failed');
       })
       .finally(() => setLoading(false));
   };
+
+  const sc = result?.scheduledCount ?? 0;
+  const ec = result?.exceptionCount ?? 0;
 
   return (
     <div style={{ padding: 24 }}>
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <div>
-          <h3 style={{ margin: 0 }}>OSM 排产引擎</h3>
-          <p style={{ margin: '4px 0 0', color: '#8c8c8c' }}>EE Assembly 3F3~3F6 MVP</p>
+          <h3 style={{ margin: 0 }}>OSM Scheduling Engine</h3>
+          <p style={{ margin: '4px 0 0', color: '#8c8c8c' }}>
+            EE (3F3~6) / ESG (4F1~6)
+          </p>
         </div>
+
+        {/* Strategy selector */}
+        <Space>
+          {['ESG', 'EE', ''].map(s => (
+            <Button
+              key={s || 'ALL'}
+              type={strategy === s ? 'primary' : 'default'}
+              size="small"
+              onClick={() => setStrategy(s)}
+            >
+              {s || 'EE+ESG'}
+            </Button>
+          ))}
+        </Space>
 
         <Button
           type="primary"
@@ -53,7 +73,7 @@ function SchedulingPanel({ api }: { api: any }) {
           loading={loading}
           size="large"
         >
-          执行排产
+          Run Scheduling
         </Button>
 
         {error && (
@@ -62,7 +82,7 @@ function SchedulingPanel({ api }: { api: any }) {
 
         {loading && (
           <div style={{ textAlign: 'center', padding: 24 }}>
-            <Spin tip="排产中..." />
+            <Spin tip="Scheduling..." />
           </div>
         )}
 
@@ -71,23 +91,14 @@ function SchedulingPanel({ api }: { api: any }) {
             <Row gutter={16}>
               <Col span={6}>
                 <Card size="small">
-                  <Statistic title="总订单" value={result.totalOrders || 0} />
+                  <Statistic title="Total Orders" value={result.totalOrders || 0} />
                 </Card>
               </Col>
               <Col span={6}>
                 <Card size="small">
                   <Statistic
-                    title="有效订单"
-                    value={result.validOrders || 0}
-                    valueStyle={{ color: '#3f8600' }}
-                  />
-                </Card>
-              </Col>
-              <Col span={6}>
-                <Card size="small">
-                  <Statistic
-                    title="排产结果"
-                    value={result.results || 0}
+                    title="Scheduled"
+                    value={sc}
                     prefix={<CheckCircleOutlined />}
                     valueStyle={{ color: '#1677ff' }}
                   />
@@ -96,24 +107,46 @@ function SchedulingPanel({ api }: { api: any }) {
               <Col span={6}>
                 <Card size="small">
                   <Statistic
-                    title="异常"
-                    value={result.exceptions || 0}
+                    title="Exceptions"
+                    value={ec}
                     prefix={<WarningOutlined />}
-                    valueStyle={{ color: (result.exceptions || 0) > 0 ? '#faad14' : '#3f8600' }}
+                    valueStyle={{ color: ec > 0 ? '#faad14' : '#3f8600' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small">
+                  <Statistic
+                    title="Rate"
+                    value={result.totalOrders ? ((sc / result.totalOrders) * 100).toFixed(0) + '%' : '-'}
+                    valueStyle={{ color: '#3f8600' }}
                   />
                 </Card>
               </Col>
             </Row>
 
-            {(result.results > 0) && (
+            {/* Line utilization */}
+            {result.lineUtilization?.length > 0 && (
+              <Card size="small" title="Line Utilization">
+                {result.lineUtilization.map((lu: any) => (
+                  <div key={lu.line} style={{ marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600 }}>{lu.line}</span>
+                    : {lu.usedHours}/{lu.totalCapacityHours}h ({lu.utilizationRate}%)
+                    · {lu.orderCount} orders
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            {sc > 0 && (
               <Alert
                 type="success"
-                message={`排产完成: ${result.results} 条结果 · 成功率 ${((result.results / Math.max(1, result.validOrders)) * 100).toFixed(0)}%`}
+                message={`Done: ${sc} results · ${ec} exceptions · Strategies: ${result.strategies?.join(', ') || '-'}`}
                 showIcon
               />
             )}
 
-            <Button icon={<ReloadOutlined />} onClick={handleRun}>重新排产</Button>
+            <Button icon={<ReloadOutlined />} onClick={handleRun}>Re-run</Button>
           </>
         )}
       </Space>

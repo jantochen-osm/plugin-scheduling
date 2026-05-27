@@ -81,20 +81,29 @@ export async function validateSchedule(ctx: Context) {
     checks.push({ rule: 'V2', name: '不漏排/多排', pass: violations.length === 0, violations: violations.slice(0, 20) });
   }
 
-  // ═══ V3: 单 MO 只用一条线 ═══
+  // ═══ V3: 拆单合理性校验（多线拆单时各线排产量之和 = 订单总量）═══
   {
     const violations: Violation[] = [];
-    const prodLines = new Map<string, Set<string>>();
+    // 按 prodId 聚合各线的排产量
+    const prodLineQty = new Map<string, { lines: Set<string>; totalPlanned: number; orderQty: number }>();
     for (const r of results) {
-      if (!prodLines.has(r.prodId)) prodLines.set(r.prodId, new Set());
-      if (r.chosenLine) prodLines.get(r.prodId)!.add(r.chosenLine);
-    }
-    for (const [prodId, lines] of prodLines) {
-      if (lines.size > 1) {
-        violations.push({ prodId, detail: `使用了 ${lines.size} 条线: ${[...lines].join(', ')}` });
+      if (!prodLineQty.has(r.prodId)) {
+        prodLineQty.set(r.prodId, { lines: new Set(), totalPlanned: 0, orderQty: r.totalQty || 0 });
+      }
+      const entry = prodLineQty.get(r.prodId)!;
+      if (r.chosenLine) entry.lines.add(r.chosenLine);
+      if (r.dailyPlan) {
+        const lineQty = Object.values(r.dailyPlan as Record<string, number>).reduce((s: number, v: number) => s + v, 0);
+        entry.totalPlanned += lineQty;
       }
     }
-    checks.push({ rule: 'V3', name: '不跨线', pass: violations.length === 0, violations });
+    for (const [prodId, { lines, totalPlanned, orderQty }] of prodLineQty) {
+      // 拆单后总量不一致
+      if (lines.size > 1 && Math.abs(totalPlanned - orderQty) > 1) {
+        violations.push({ prodId, detail: `拆单到 ${lines.size} 条线 (${[...lines].join(', ')})，总排产 ${totalPlanned} ≠ 订单 ${orderQty}` });
+      }
+    }
+    checks.push({ rule: 'V3', name: '拆单合理', pass: violations.length === 0, violations });
   }
 
   // ═══ V4: 同一线同一天总工时 ≤ 日历工时 ═══

@@ -4,7 +4,52 @@ import { validateSchedule } from './actions/validateSchedule';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
-    // Collections 通过 API 或 UI 创建，不在 beforeLoad 中注册
+    // Collections (production_stages, customer_line_mapping,
+    // calendar_exceptions) are created via NocoBase admin UI or REST API.
+    // They are NOT registered here via db.import() to ensure they appear in the
+    // admin collection manager as user-managed collections.
+    //
+    // To create them: POST /api/collections:create with the collection schema.
+    // See src/server/collections/*.ts for field definitions.
+  }
+
+  async install() {
+    console.log('Seeding initial data for Task 1.1...');
+    const db = this.app.db;
+    
+    // 1. production_stages
+    const ProductionStages = db.getRepository('production_stages');
+    if (ProductionStages && (await ProductionStages.count()) === 0) {
+      await ProductionStages.create({
+        values: [
+          { stageId: 'STAGE_001', stageName: 'Assembly', stageSequence: 1, remarks: 'SMT & Assembly' },
+          { stageId: 'STAGE_002', stageName: 'Package', stageSequence: 2, remarks: 'Packaging' },
+        ],
+      });
+    }
+
+    // 2. customer_line_mapping
+    const CustomerLineMapping = db.getRepository('customer_line_mapping');
+    if (CustomerLineMapping && (await CustomerLineMapping.count()) === 0) {
+      await CustomerLineMapping.create({
+        values: [
+          { keyAccount: 'CUST_A', osmCategory: 'ESG', assignedLines: ['ESG_LINE_1'] },
+          { keyAccount: 'CUST_B', osmCategory: 'ESG', assignedLines: ['ESG_LINE_1', 'ESG_LINE_2'] },
+        ],
+      });
+    }
+
+    // 3. calendar_exceptions
+    const CalendarExceptions = db.getRepository('calendar_exceptions');
+    if (CalendarExceptions && (await CalendarExceptions.count()) === 0) {
+      await CalendarExceptions.create({
+        values: [
+          { exceptionDate: '2026-06-01', exceptionType: 'HOLIDAY', affectedLines: null, workHours: 0, setupTime: 0, remarks: 'Childrens Day' },
+          { exceptionDate: '2026-06-05', exceptionType: 'MAINTENANCE', affectedLines: ['3F3'], workHours: 8, setupTime: 0, remarks: 'Monthly maintenance' },
+          { exceptionDate: '2026-06-06', exceptionType: 'CHANGEOVER', affectedLines: ['1F1'], workHours: 10, setupTime: 120, remarks: 'Product switch' },
+        ],
+      });
+    }
   }
 
   async load() {

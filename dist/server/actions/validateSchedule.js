@@ -81,17 +81,24 @@ async function validateSchedule(ctx) {
   }
   {
     const violations = [];
-    const prodLines = /* @__PURE__ */ new Map();
+    const prodLineQty = /* @__PURE__ */ new Map();
     for (const r of results) {
-      if (!prodLines.has(r.prodId)) prodLines.set(r.prodId, /* @__PURE__ */ new Set());
-      if (r.chosenLine) prodLines.get(r.prodId).add(r.chosenLine);
-    }
-    for (const [prodId, lines] of prodLines) {
-      if (lines.size > 1) {
-        violations.push({ prodId, detail: `\u4F7F\u7528\u4E86 ${lines.size} \u6761\u7EBF: ${[...lines].join(", ")}` });
+      if (!prodLineQty.has(r.prodId)) {
+        prodLineQty.set(r.prodId, { lines: /* @__PURE__ */ new Set(), totalPlanned: 0, orderQty: r.totalQty || 0 });
+      }
+      const entry = prodLineQty.get(r.prodId);
+      if (r.chosenLine) entry.lines.add(r.chosenLine);
+      if (r.dailyPlan) {
+        const lineQty = Object.values(r.dailyPlan).reduce((s, v) => s + v, 0);
+        entry.totalPlanned += lineQty;
       }
     }
-    checks.push({ rule: "V3", name: "\u4E0D\u8DE8\u7EBF", pass: violations.length === 0, violations });
+    for (const [prodId, { lines, totalPlanned, orderQty }] of prodLineQty) {
+      if (lines.size > 1 && Math.abs(totalPlanned - orderQty) > 1) {
+        violations.push({ prodId, detail: `\u62C6\u5355\u5230 ${lines.size} \u6761\u7EBF (${[...lines].join(", ")})\uFF0C\u603B\u6392\u4EA7 ${totalPlanned} \u2260 \u8BA2\u5355 ${orderQty}` });
+      }
+    }
+    checks.push({ rule: "V3", name: "\u62C6\u5355\u5408\u7406", pass: violations.length === 0, violations });
   }
   {
     const violations = [];

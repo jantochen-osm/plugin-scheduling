@@ -33,8 +33,57 @@ module.exports = __toCommonJS(plugin_exports);
 var import_server = require("@nocobase/server");
 var import_runScheduling = require("./actions/runScheduling");
 var import_validateSchedule = require("./actions/validateSchedule");
+var import_path = require("path");
 class PluginSchedulingServer extends import_server.Plugin {
   async beforeLoad() {
+    // Collections (production_stages, product_stage_mapping, customer_line_mapping,
+    // calendar_exceptions) are created via NocoBase admin UI or REST API.
+    // They are NOT registered here via db.import() to ensure they appear in the
+    // admin collection manager as user-managed collections.
+  }
+  }
+  async install() {
+    console.log("Seeding initial data for Task 1.1...");
+    const db = this.app.db;
+    const ProductionStages = db.getRepository("production_stages");
+    if (ProductionStages && await ProductionStages.count() === 0) {
+      await ProductionStages.create({
+        values: [
+          { stageId: "STAGE_001", stageName: "Assembly", stageSequence: 1, remarks: "SMT & Assembly" },
+          { stageId: "STAGE_002", stageName: "Package", stageSequence: 2, remarks: "Packaging" }
+        ]
+      });
+    }
+    const ProductStageMapping = db.getRepository("product_stage_mapping");
+    if (ProductStageMapping && await ProductStageMapping.count() === 0) {
+      await ProductStageMapping.create({
+        values: [
+          { productCode: "FA014A02", stageName: "Assembly", candidateLines: ["3F3", "3F4", "3F5", "3F6"], isFixed: false },
+          { productCode: "FA014A02", stageName: "Package", candidateLines: ["1F1", "1F2", "1F3"], isFixed: false },
+          { productCode: "FA015B01", stageName: "Assembly", candidateLines: ["ESG_LINE_1", "ESG_LINE_2"], isFixed: false },
+          { productCode: "FA015B01", stageName: "Package", candidateLines: ["ESG_LINE_1"], isFixed: true }
+        ]
+      });
+    }
+    const CustomerLineMapping = db.getRepository("customer_line_mapping");
+    if (CustomerLineMapping && await CustomerLineMapping.count() === 0) {
+      await CustomerLineMapping.create({
+        values: [
+          { keyAccount: "CUST_A", osmCategory: "ESG", assignedLines: ["ESG_LINE_1"] },
+          { keyAccount: "CUST_B", osmCategory: "ESG", assignedLines: ["ESG_LINE_1", "ESG_LINE_2"] }
+        ]
+      });
+    }
+    const CalendarExceptions = db.getRepository("calendar_exceptions");
+    if (CalendarExceptions && await CalendarExceptions.count() === 0) {
+      await CalendarExceptions.create({
+        values: [
+          { exceptionDate: "2026-06-01", exceptionType: "HOLIDAY", affectedLines: null, workHours: 0, setupTime: 0, remarks: "Childrens Day" },
+          { exceptionDate: "2026-06-05", exceptionType: "MAINTENANCE", affectedLines: ["3F3"], workHours: 8, setupTime: 0, remarks: "Monthly maintenance" },
+          { exceptionDate: "2026-06-06", exceptionType: "CHANGEOVER", affectedLines: ["1F1"], workHours: 10, setupTime: 120, remarks: "Product switch" }
+        ]
+      });
+    }
   }
   async load() {
     this.app.resourceManager.define({

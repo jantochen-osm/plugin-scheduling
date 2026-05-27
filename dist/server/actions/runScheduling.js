@@ -1,3 +1,12 @@
+/**
+ * This file is part of the NocoBase (R) project.
+ * Copyright (c) 2020-2024 NocoBase Co., Ltd.
+ * Authors: NocoBase Team.
+ *
+ * This project is dual-licensed under AGPL-3.0 and NocoBase Commercial License.
+ * For more information, please refer to: https://www.nocobase.com/agreement.
+ */
+
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -26,20 +35,25 @@ const MVP_CONFIG = {
   targetLines: ["3F3", "3F4", "3F5", "3F6"],
   defaultWorkHours: 10,
   maxDays: 365,
-  safetyBuffer: 2,
-  // 安全缓冲天数
-  leadTimeMultiplier: 1.5,
-  // 前置工段系数
-  maxLinesNormal: 3,
-  // 正常最多使用产线数（保留 buffer）
-  maxLinesOverflow: 4,
-  // 溢出时最多线数（100% 产能，仅当 3 条线全满时）
-  bufferRatio: 0.1,
-  // 每日产能保留 buffer 比例（10%）
-  headcountTolerance: 2,
-  // headcount 差值 ≤ 2 视为相近，优先同线
-  seriesPrefixLen: 6
-  // itemId 前 N 位作为系列 key
+  setupTimeHours: 1,
+  // 换线/换型惩罚时间（小时）
+  minTailQty: 10,
+  // 尾差合并阈值
+  clusterWindowDays: 3,
+  // 同品聚类窗口
+  jitBufferDays: 2,
+  // 后拉式安全缓冲：目标完工日 = 交期前 N 天（防止产能争抢导致逾期）
+  // 选线权重
+  lineSelectWeights: { capacity: 0.3, setupAffinity: 0.5, loadBalance: 0.2 },
+  // 成本模型（加班需要额外场地+治具，综合成本高于新开产线）
+  costModel: {
+    standardHourRate: 1,
+    // 标准工时成本基线
+    overtimeMultiplier: 2.5,
+    // 加班成本倍率（场地+治具+加班费 = 2.5x）
+    additionalLineMultiplier: 1.2
+    // 新增产线成本倍率（已有场地和治具 = 1.2x）
+  }
 };
 async function step1_fetchOrders(ctx) {
   const repo = ctx.db.getRepository("production_order_ds");
@@ -59,18 +73,36 @@ function step2_validate(orders) {
   const exceptions = [];
   for (const mo of orders) {
     if (!mo.dlvDate) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "MISSING_DLV_DATE", severity: "BLOCKER", message: "DlvDate \u4E3A\u7A7A" });
+      exceptions.push({
+        prodId: mo.prodId,
+        itemId: mo.itemId,
+        exceptionType: "MISSING_DLV_DATE",
+        severity: "BLOCKER",
+        message: "DlvDate \u4E3A\u7A7A"
+      });
       continue;
     }
     const dlvDate = new Date(mo.dlvDate);
     const today = /* @__PURE__ */ new Date();
     today.setHours(0, 0, 0, 0);
     if (dlvDate < today) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "PAST_DLV_DATE", severity: "BLOCKER", message: `DlvDate=${mo.dlvDate} \u5DF2\u8FC7\u4EA4\u671F` });
+      exceptions.push({
+        prodId: mo.prodId,
+        itemId: mo.itemId,
+        exceptionType: "PAST_DLV_DATE",
+        severity: "BLOCKER",
+        message: `DlvDate=${mo.dlvDate} \u5DF2\u8FC7\u4EA4\u671F`
+      });
       continue;
     }
     if (mo.qtySched <= 0) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "INVALID_QTY", severity: "BLOCKER", message: `QtySched=${mo.qtySched}` });
+      exceptions.push({
+        prodId: mo.prodId,
+        itemId: mo.itemId,
+        exceptionType: "INVALID_QTY",
+        severity: "BLOCKER",
+        message: `QtySched=${mo.qtySched}`
+      });
       continue;
     }
     if (mo.osmCategory !== MVP_CONFIG.osmCategory) continue;
@@ -79,21 +111,25 @@ function step2_validate(orders) {
   }
   return { validOrders: valid, exceptions };
 }
-function getSeriesKey(itemId) {
-  return (itemId || "").slice(0, MVP_CONFIG.seriesPrefixLen);
-}
 function step3_sort(orders) {
-  return [...orders].sort((a, b) => {
+  const windowDays = MVP_CONFIG.clusterWindowDays;
+  const enriched = orders.map((o) => {
+    const dlvTime = new Date(o.dlvDate).getTime();
+    return { ...o, _dlvTime: dlvTime };
+  });
+  enriched.sort((a, b) => a._dlvTime - b._dlvTime);
+  const baseTime = enriched.length > 0 ? enriched[0]._dlvTime : 0;
+  const windowMs = windowDays * 864e5;
+  for (const o of enriched) {
+    o._windowIdx = Math.floor((o._dlvTime - baseTime) / windowMs);
+  }
+  return enriched.sort((a, b) => {
     const aOverdue = a.overdueDays || 0;
     const bOverdue = b.overdueDays || 0;
     if (aOverdue !== bOverdue) return bOverdue - aOverdue;
-    const aSeries = getSeriesKey(a.itemId);
-    const bSeries = getSeriesKey(b.itemId);
-    if (aSeries !== bSeries) return aSeries.localeCompare(bSeries);
-    const aHc = a.headcount || 0;
-    const bHc = b.headcount || 0;
-    if (aHc !== bHc) return aHc - bHc;
-    return new Date(a.dlvDate).getTime() - new Date(b.dlvDate).getTime();
+    if (a._windowIdx !== b._windowIdx) return a._windowIdx - b._windowIdx;
+    if (a.itemId !== b.itemId) return a.itemId < b.itemId ? -1 : 1;
+    return a._dlvTime - b._dlvTime;
   });
 }
 async function step4_fetchRoutes(ctx) {
@@ -177,211 +213,342 @@ function addDays(dateStr, n) {
   d.setDate(d.getDate() + n);
   return formatDate(d);
 }
-function tryAllocateSingleLine(line, startFrom, qtySched, uph, pool, allowOverflow) {
-  let remaining = qtySched;
-  const dailyPlan = {};
-  const consumed = [];
-  let startDate = "";
-  let finishDate = "";
-  let curDate = startFrom;
-  let dayCount = 0;
-  const bufferFactor = allowOverflow ? 0 : MVP_CONFIG.bufferRatio;
-  while (remaining > 0 && dayCount < MVP_CONFIG.maxDays) {
-    const dateStr = curDate;
-    const totalHours = pool.calendarMap.get(dateStr) || 0;
-    const reservedHours = totalHours * bufferFactor;
-    const remainingHours = pool.getRemaining(line, dateStr) - reservedHours;
-    if (remainingHours < 0.1) {
-      curDate = addDays(dateStr, 1);
-      dayCount++;
-      continue;
-    }
-    const maxQtyToday = remainingHours * uph;
-    const qtyToday = remaining <= maxQtyToday ? remaining : Math.floor(maxQtyToday);
-    if (qtyToday <= 0) {
-      curDate = addDays(dateStr, 1);
-      dayCount++;
-      continue;
-    }
-    const hoursToday = qtyToday / uph;
-    pool.consume(line, dateStr, hoursToday);
-    consumed.push({ line, date: dateStr, hours: hoursToday });
-    dailyPlan[dateStr] = (dailyPlan[dateStr] || 0) + qtyToday;
-    remaining -= qtyToday;
-    if (!startDate) startDate = dateStr;
-    finishDate = dateStr;
-    if (remaining > 0) {
-      curDate = addDays(dateStr, 1);
-      dayCount++;
+function calcLatestStart(pool, linesToTry, uph, totalQty, setupHours, dlvStr, today) {
+  const hoursNeeded = totalQty / uph + setupHours;
+  const schedulableDates = [];
+  for (const [dateStr] of pool.calendarMap) {
+    if (dateStr >= today && dateStr <= dlvStr) {
+      schedulableDates.push(dateStr);
     }
   }
-  if (remaining > 0) {
-    for (const c of consumed) pool.restore(c.line, c.date, c.hours);
-    return null;
+  schedulableDates.sort((a, b) => a > b ? -1 : a < b ? 1 : 0);
+  let accumulatedHours = 0;
+  let latestStart = today;
+  for (const dateStr of schedulableDates) {
+    for (const line of linesToTry) {
+      accumulatedHours += pool.getRemaining(line, dateStr);
+    }
+    latestStart = dateStr;
+    if (accumulatedHours >= hoursNeeded) {
+      break;
+    }
   }
-  return { dailyPlan, consumed, startDate, finishDate };
+  return latestStart;
 }
-function mergeTailFragment(line, dailyPlan, uph, pool) {
-  const sortedDates = Object.keys(dailyPlan).sort();
-  let finishDate = sortedDates[sortedDates.length - 1] || "";
-  for (let i = sortedDates.length - 1; i >= 1; i--) {
-    const curDay = sortedDates[i];
-    const prevDay = sortedDates[i - 1];
-    if (dailyPlan[curDay] < 10 && dailyPlan[curDay] < dailyPlan[prevDay]) {
-      const frag = dailyPlan[curDay];
-      const fragH = frag / uph;
-      dailyPlan[prevDay] += frag;
-      pool.restore(line, curDay, fragH);
-      pool.consume(line, prevDay, fragH);
-      delete dailyPlan[curDay];
-      if (curDay === finishDate) finishDate = prevDay;
+function trySchedule(mo, linesToTry, pool, allowOvertime, uph, dlvStr, today, lineLastItem, startFrom) {
+  let remainingQty = mo.qtySched;
+  let curDate = startFrom || today;
+  let dayCount = 0;
+  const dailyPlans = {};
+  const extraPlans = {};
+  const consumed = [];
+  const isFirstDayForLine = {};
+  for (const l of linesToTry) {
+    dailyPlans[l] = {};
+    extraPlans[l] = {};
+    isFirstDayForLine[l] = true;
+  }
+  while (remainingQty > 0 && dayCount < MVP_CONFIG.maxDays) {
+    const dateStr = typeof curDate === "string" ? curDate : formatDate(new Date(curDate));
+    let totalRemainingCapacity = 0;
+    for (const [calDate] of pool.calendarMap) {
+      if (calDate >= dateStr && calDate <= dlvStr) {
+        for (const ln of linesToTry) {
+          totalRemainingCapacity += pool.getRemaining(ln, calDate);
+        }
+      }
+    }
+    const hoursNeeded = remainingQty / uph;
+    const isFallingBehind = hoursNeeded > totalRemainingCapacity;
+    for (const line of linesToTry) {
+      if (remainingQty <= 0) break;
+      const remHours = pool.getRemaining(line, dateStr);
+      let extraHours = 0;
+      let setupHoursToConsume = 0;
+      if (isFirstDayForLine[line] && lineLastItem[line] !== mo.itemId) {
+        setupHoursToConsume = MVP_CONFIG.setupTimeHours;
+      }
+      if (allowOvertime && isFallingBehind) {
+        extraHours = Math.min(MVP_CONFIG.defaultWorkHours, remainingQty / uph + setupHoursToConsume - remHours);
+        if (extraHours < 0) extraHours = 0;
+      }
+      const totalAvailableHours = remHours + extraHours;
+      if (totalAvailableHours <= setupHoursToConsume + 0.1) continue;
+      const maxQty = (totalAvailableHours - setupHoursToConsume) * uph;
+      const qtyToday = remainingQty <= maxQty ? remainingQty : Math.floor(maxQty);
+      if (qtyToday <= 0) continue;
+      const standardHoursForSetup = Math.min(setupHoursToConsume, remHours);
+      const remainingRemHoursForProduction = Math.max(0, remHours - standardHoursForSetup);
+      const qtyFromStandard = Math.min(qtyToday, remainingRemHoursForProduction * uph);
+      const qtyFromExtra = Math.max(0, qtyToday - qtyFromStandard);
+      const standardHoursToConsume = standardHoursForSetup + qtyFromStandard / uph;
+      pool.consume(line, dateStr, standardHoursToConsume);
+      consumed.push({ line, date: dateStr, hours: standardHoursToConsume });
+      dailyPlans[line][dateStr] = qtyToday;
+      if (qtyFromExtra > 0) extraPlans[line][dateStr] = qtyFromExtra;
+      isFirstDayForLine[line] = false;
+      remainingQty -= qtyToday;
+    }
+    if (remainingQty > 0) {
+      curDate = addDays(dateStr, 1);
+      dayCount++;
     }
   }
-  return finishDate;
+  for (const c of consumed) {
+    pool.restore(c.line, c.date, c.hours);
+  }
+  let globalStart = "";
+  let globalFinish = "";
+  for (const line of linesToTry) {
+    const dates = Object.keys(dailyPlans[line]).sort();
+    if (dates.length > 0) {
+      if (!globalStart || dates[0] < globalStart) globalStart = dates[0];
+      if (!globalFinish || dates[dates.length - 1] > globalFinish) globalFinish = dates[dates.length - 1];
+    }
+  }
+  const { standardHourRate, overtimeMultiplier, additionalLineMultiplier } = MVP_CONFIG.costModel;
+  let totalStandardHours = 0;
+  let totalOvertimeHours = 0;
+  for (const line of linesToTry) {
+    for (const dateStr of Object.keys(dailyPlans[line])) {
+      const qty = dailyPlans[line][dateStr] || 0;
+      const extraQty = extraPlans[line] && extraPlans[line][dateStr] || 0;
+      const standardQty = Math.max(0, qty - extraQty);
+      totalStandardHours += standardQty / uph;
+      totalOvertimeHours += extraQty / uph;
+    }
+  }
+  const baseLineCount = 1;
+  const extraLines = Math.max(0, linesToTry.length - baseLineCount);
+  const standardCost = totalStandardHours * standardHourRate;
+  const overtimeCost = totalOvertimeHours * standardHourRate * overtimeMultiplier;
+  const extraLineCost = extraLines > 0 ? (totalStandardHours + totalOvertimeHours) / linesToTry.length * extraLines * standardHourRate * additionalLineMultiplier : 0;
+  const totalCost = standardCost + overtimeCost + extraLineCost;
+  return {
+    success: remainingQty <= 0,
+    remaining: remainingQty,
+    startDate: globalStart,
+    finishDate: globalFinish,
+    dailyPlans,
+    extraPlans,
+    linesUsed: linesToTry,
+    // 成本估算
+    costEstimate: {
+      standardHours: Math.round(totalStandardHours * 10) / 10,
+      overtimeHours: Math.round(totalOvertimeHours * 10) / 10,
+      linesUsedCount: linesToTry.length,
+      standardCost: Math.round(standardCost * 10) / 10,
+      overtimeCost: Math.round(overtimeCost * 10) / 10,
+      extraLineCost: Math.round(extraLineCost * 10) / 10,
+      totalCost: Math.round(totalCost * 10) / 10
+    }
+  };
+}
+function getCombinations(arr, k) {
+  if (k === 0) return [[]];
+  if (k > arr.length) return [];
+  const result = [];
+  function dfs(start, current) {
+    if (current.length === k) {
+      result.push([...current]);
+      return;
+    }
+    for (let i = start; i < arr.length; i++) {
+      current.push(arr[i]);
+      dfs(i + 1, current);
+      current.pop();
+    }
+  }
+  dfs(0, []);
+  return result;
 }
 function scheduleAll(sortedOrders, routeMap, lineCodes, pool) {
   const results = [];
   const exceptions = [];
   const lineLoad = {};
-  for (const l of lineCodes) lineLoad[l] = 0;
-  const lineSeriesMap = {};
-  const lineHeadcountMap = {};
+  const lineLastItem = {};
   for (const l of lineCodes) {
-    lineSeriesMap[l] = [];
-    lineHeadcountMap[l] = [];
+    lineLoad[l] = 0;
+    lineLastItem[l] = "";
   }
   for (const mo of sortedOrders) {
-    let rankLines = function(overflow) {
-      return [...lineCodes].sort((a, b) => {
-        const aHasSeries = lineSeriesMap[a].includes(seriesKey) ? 1 : 0;
-        const bHasSeries = lineSeriesMap[b].includes(seriesKey) ? 1 : 0;
-        if (aHasSeries !== bHasSeries) return bHasSeries - aHasSeries;
-        const aHcList = lineHeadcountMap[a];
-        const bHcList = lineHeadcountMap[b];
-        const aAvgHc = aHcList.length ? aHcList.reduce((s, v) => s + v, 0) / aHcList.length : 999;
-        const bAvgHc = bHcList.length ? bHcList.reduce((s, v) => s + v, 0) / bHcList.length : 999;
-        const aDiff = Math.abs(aAvgHc - headcount);
-        const bDiff = Math.abs(bAvgHc - headcount);
-        const aHcScore = aDiff <= MVP_CONFIG.headcountTolerance ? 1 : 0;
-        const bHcScore = bDiff <= MVP_CONFIG.headcountTolerance ? 1 : 0;
-        if (aHcScore !== bHcScore) return bHcScore - aHcScore;
-        const aIdx = MVP_CONFIG.targetLines.indexOf(a);
-        const bIdx = MVP_CONFIG.targetLines.indexOf(b);
-        return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
-      });
-    };
     const routeData = routeMap.get(mo.itemId);
     if (!routeData) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "MISSING_ROUTE", severity: "BLOCKER", message: `\u65E0 Assembly \u8DEF\u7EBF` });
+      exceptions.push({
+        prodId: mo.prodId,
+        itemId: mo.itemId,
+        exceptionType: "MISSING_ROUTE",
+        severity: "BLOCKER",
+        message: `\u65E0 Assembly \u8DEF\u7EBF`
+      });
       continue;
     }
     const uph = routeData.uph;
     const headcount = routeData.headcount;
-    const seriesKey = getSeriesKey(mo.itemId);
-    const totalHours = mo.qtySched / uph;
     const today = formatDate(/* @__PURE__ */ new Date());
-    const dlv = mo.dlvDate instanceof Date ? formatDate(mo.dlvDate) : mo.dlvDate;
-    const assemblyDays = Math.ceil(totalHours / MVP_CONFIG.defaultWorkHours);
-    const totalProdDays = Math.ceil(assemblyDays * MVP_CONFIG.leadTimeMultiplier);
-    const latestStart = addDays(dlv, -(totalProdDays + MVP_CONFIG.safetyBuffer));
-    const startFrom = latestStart > today ? latestStart : today;
-    const expansionOrder = MVP_CONFIG.targetLines.filter((l) => lineCodes.includes(l));
-    let scheduled = false;
-    const maxLines = MVP_CONFIG.maxLinesOverflow;
-    for (let lineCount = 1; lineCount <= maxLines && !scheduled; lineCount++) {
-      const isOverflow = lineCount > MVP_CONFIG.maxLinesNormal;
-      if (isOverflow) {
-        const normalLines = rankLines(false).slice(0, MVP_CONFIG.maxLinesNormal);
-        const totalNormalCap = normalLines.reduce((s, l) => s + pool.getTotalRemaining(l, startFrom), 0);
-        if (totalNormalCap >= totalHours * 0.5) continue;
-      }
-      const candidateLines = lineCount === 1 ? rankLines(isOverflow).slice(0, 1) : expansionOrder.slice(0, lineCount);
-      const qtyPerLine = Math.floor(mo.qtySched / lineCount);
-      const remainder = mo.qtySched - qtyPerLine * lineCount;
-      const lineResults = [];
-      let allSuccess = true;
-      for (let li = 0; li < candidateLines.length; li++) {
-        const tryLine = candidateLines[li];
-        const assignQty = li === 0 ? qtyPerLine + remainder : qtyPerLine;
-        if (assignQty <= 0) {
-          lineResults.push({ line: tryLine, dailyPlan: {}, startDate: "", finishDate: "" });
-          continue;
-        }
-        const alloc = tryAllocateSingleLine(tryLine, startFrom, assignQty, uph, pool, isOverflow);
-        if (!alloc) {
-          allSuccess = false;
-          break;
-        }
-        const fd = mergeTailFragment(tryLine, alloc.dailyPlan, uph, pool);
-        lineResults.push({ line: tryLine, dailyPlan: alloc.dailyPlan, startDate: alloc.startDate, finishDate: fd });
-      }
-      if (!allSuccess) {
-        for (const lr of lineResults) {
-          for (const [date, qty] of Object.entries(lr.dailyPlan)) {
-            pool.restore(lr.line, date, qty / uph);
+    const dlvStr = mo.dlvDate instanceof Date ? formatDate(mo.dlvDate) : mo.dlvDate ? String(mo.dlvDate).split("T")[0] : "";
+    const { capacity: w1, setupAffinity: w2, loadBalance: w3 } = MVP_CONFIG.lineSelectWeights;
+    const maxLoad = Math.max(...lineCodes.map((l) => lineLoad[l]), 1);
+    const lineCapacities = new Map(lineCodes.map((l) => [l, pool.getTotalRemaining(l, today)]));
+    const maxCap = Math.max(...lineCapacities.values(), 1);
+    const rankedLines = lineCodes.map((line) => {
+      const capScore = lineCapacities.get(line) / maxCap;
+      const affinityScore = lineLastItem[line] === mo.itemId ? 1 : 0;
+      const loadScore = 1 - lineLoad[line] / maxLoad;
+      const score = w1 * capScore + w2 * affinityScore + w3 * loadScore;
+      return { line, score };
+    }).sort((a, b) => b.score - a.score).map((x) => x.line);
+    let bestResult = null;
+    let foundIdeal = false;
+    const maxLines = rankedLines.length;
+    const bufferDlv = addDays(dlvStr, -MVP_CONFIG.jitBufferDays);
+    const targetDlv = bufferDlv >= today ? bufferDlv : dlvStr;
+    for (const allowOT of [false, true]) {
+      for (let numLines = 1; numLines <= maxLines; numLines++) {
+        const combos = numLines === 1 ? rankedLines.map((l) => [l]) : getCombinations(rankedLines, numLines);
+        for (const linesToTry of combos) {
+          const setupH = linesToTry.some((l) => lineLastItem[l] !== mo.itemId) ? MVP_CONFIG.setupTimeHours : 0;
+          const startFrom = calcLatestStart(pool, linesToTry, uph, mo.qtySched, setupH, targetDlv, today);
+          const res = trySchedule(mo, linesToTry, pool, allowOT, uph, dlvStr, today, lineLastItem, startFrom);
+          if (res.success && res.finishDate <= dlvStr) {
+            if (!bestResult || res.costEstimate.totalCost < bestResult.costEstimate.totalCost) {
+              bestResult = res;
+            }
+            foundIdeal = true;
+            break;
+          }
+          if (!bestResult || res.remaining < bestResult.remaining || res.remaining === 0 && res.finishDate < bestResult.finishDate) {
+            bestResult = res;
           }
         }
-        continue;
+        if (foundIdeal) break;
       }
-      const latestFinish = lineResults.map((r) => r.finishDate).filter(Boolean).sort().pop() || "";
-      if (latestFinish > dlv && lineCount < maxLines) {
-        for (const lr of lineResults) {
-          for (const [date, qty] of Object.entries(lr.dailyPlan)) {
-            pool.restore(lr.line, date, qty / uph);
-          }
-        }
-        continue;
-      }
-      scheduled = true;
-      const allStartDates = lineResults.map((r) => r.startDate).filter(Boolean).sort();
-      const allFinishDates = lineResults.map((r) => r.finishDate).filter(Boolean).sort();
-      const startDate = allStartDates[0] || "";
-      const finishDate = allFinishDates[allFinishDates.length - 1] || "";
-      const chosenLine = lineResults.map((r) => r.line).join(",");
-      const combinedDailyPlan = {};
-      for (const lr of lineResults) {
-        for (const [date, qty] of Object.entries(lr.dailyPlan)) {
-          combinedDailyPlan[date] = (combinedDailyPlan[date] || 0) + qty;
-        }
-        lineLoad[lr.line] = (lineLoad[lr.line] || 0) + mo.qtySched / lineCount / uph;
-        lineSeriesMap[lr.line].push(seriesKey);
-        lineHeadcountMap[lr.line].push(headcount);
-      }
-      const dlvStr = dlv;
-      const todayStr = today;
-      const overdueDays = finishDate > dlvStr ? Math.ceil((new Date(finishDate).getTime() - new Date(dlvStr).getTime()) / 864e5) : 0;
-      let overdueType = "ON_TIME";
-      if (dlvStr < todayStr) overdueType = "PAST_DUE";
-      else if (overdueDays > 0) overdueType = "AT_RISK";
-      if (overdueType === "AT_RISK") {
-        exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "DELIVERY_AT_RISK", severity: "WARNING", message: `\u6392\u4EA7\u903E\u671F\uFF1A\u9884\u8BA1\u5B8C\u6210 ${finishDate}\uFF0C\u8D85\u4EA4\u671F ${overdueDays} \u5929` });
-      } else if (overdueType === "PAST_DUE") {
-        exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "PAST_DUE_SCHEDULED", severity: "WARNING", message: `\u5DF2\u8FC7\u4EA4\u671F ${dlvStr}\uFF0C\u9884\u8BA1\u5B8C\u6210 ${finishDate}` });
-      }
-      results.push({
-        prodId: mo.prodId,
-        itemId: mo.itemId,
-        totalQty: mo.qtySched,
-        dlvDate: dlvStr,
-        prodStatus: mo.prodStatus,
-        prodPoolId: mo.prodPoolId,
-        osmCategory: mo.osmCategory,
-        startDate,
-        finishDate,
-        isOverdue: overdueDays > 0,
-        overdueDays,
-        overdueType,
-        candidateLines: lineCodes.join(","),
-        chosenLine,
-        linesUsed: lineCount,
-        isOverflow,
-        uph,
-        headcount,
-        dailyPlan: Object.keys(combinedDailyPlan).length > 0 ? combinedDailyPlan : null
-      });
+      if (foundIdeal) break;
     }
-    if (!scheduled) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "CALENDAR_EXHAUSTED", severity: "BLOCKER", message: `\u5C1D\u8BD5\u6700\u591A ${maxLines} \u6761\u7EBF\u4ECD\u65E0\u6CD5\u6392\u4EA7` });
+    if (!foundIdeal && bestResult && bestResult.finishDate > dlvStr) {
+      for (const allowOT of [false, true]) {
+        for (let numLines = 1; numLines <= maxLines; numLines++) {
+          const combos = numLines === 1 ? rankedLines.map((l) => [l]) : getCombinations(rankedLines, numLines);
+          for (const linesToTry of combos) {
+            const res = trySchedule(mo, linesToTry, pool, allowOT, uph, dlvStr, today, lineLastItem, today);
+            if (res.success && res.finishDate <= dlvStr) {
+              if (!bestResult || bestResult.finishDate > dlvStr || res.costEstimate.totalCost < bestResult.costEstimate.totalCost) {
+                bestResult = res;
+              }
+              foundIdeal = true;
+              break;
+            }
+            if (!bestResult || res.remaining < bestResult.remaining || res.remaining === 0 && res.finishDate < bestResult.finishDate) {
+              bestResult = res;
+            }
+          }
+          if (foundIdeal) break;
+        }
+        if (foundIdeal) break;
+      }
+    }
+    if (bestResult) {
+      if (bestResult.remaining > 0) {
+        exceptions.push({
+          prodId: mo.prodId,
+          itemId: mo.itemId,
+          exceptionType: "CALENDAR_EXHAUSTED",
+          severity: "BLOCKER",
+          message: `\u8D85\u51FA ${MVP_CONFIG.maxDays} \u5929\u4ECD\u6709 ${Math.round(
+            bestResult.remaining
+          )} \u672A\u6392\uFF08\u5DF2\u542F\u7528\u6700\u591A ${maxLines} \u6761\u7EBF\u5E76\u52A0\u53CC\u73ED\uFF09`
+        });
+      }
+      for (const line of bestResult.linesUsed) {
+        const dp = bestResult.dailyPlans[line];
+        const ep = bestResult.extraPlans[line] || {};
+        if (!dp || Object.keys(dp).length === 0) continue;
+        const sortedDates = Object.keys(dp).sort();
+        for (let i = sortedDates.length - 1; i >= 1; i--) {
+          const curDay = sortedDates[i];
+          const prevDay = sortedDates[i - 1];
+          if (dp[curDay] < MVP_CONFIG.minTailQty && dp[curDay] < dp[prevDay]) {
+            const fragment = dp[curDay];
+            dp[prevDay] += fragment;
+            delete dp[curDay];
+            if (ep[curDay]) delete ep[curDay];
+          }
+        }
+        let lineStartDate = "";
+        let lineFinishDate = "";
+        let lineTotalQty = 0;
+        let lineSetupHours = 0;
+        if (lineLastItem[line] !== mo.itemId) {
+          lineSetupHours = MVP_CONFIG.setupTimeHours;
+        }
+        let isFirstDayToConsume = true;
+        const finalDates = Object.keys(dp).sort();
+        for (const dateStr of finalDates) {
+          const qty = dp[dateStr];
+          let setupH = 0;
+          if (isFirstDayToConsume) {
+            setupH = lineSetupHours;
+          }
+          isFirstDayToConsume = false;
+          const extraQty = ep[dateStr] || 0;
+          const standardQty = Math.max(0, qty - extraQty);
+          const totalStandardHoursNeeded = setupH + standardQty / uph;
+          const consumeH = Math.min(totalStandardHoursNeeded, pool.getRemaining(line, dateStr));
+          pool.consume(line, dateStr, consumeH);
+          lineTotalQty += qty;
+          if (!lineStartDate || dateStr < lineStartDate) lineStartDate = dateStr;
+          if (!lineFinishDate || dateStr > lineFinishDate) lineFinishDate = dateStr;
+        }
+        lineLastItem[line] = mo.itemId;
+        lineLoad[line] += lineTotalQty / uph + lineSetupHours;
+        const overdueDays = lineFinishDate > dlvStr ? Math.ceil((new Date(lineFinishDate).getTime() - new Date(dlvStr).getTime()) / 864e5) : 0;
+        let overdueType = "ON_TIME";
+        if (dlvStr < today) {
+          overdueType = "PAST_DUE";
+        } else if (overdueDays > 0) {
+          overdueType = "AT_RISK";
+        }
+        if (overdueType === "AT_RISK") {
+          exceptions.push({
+            prodId: mo.prodId,
+            itemId: mo.itemId,
+            exceptionType: "DELIVERY_AT_RISK",
+            severity: "WARNING",
+            message: `\u4EA7\u7EBF ${line} \u9884\u8BA1\u5B8C\u6210 ${lineFinishDate}\uFF0C\u8D85\u4EA4\u671F ${overdueDays} \u5929`
+          });
+        } else if (overdueType === "PAST_DUE") {
+          exceptions.push({
+            prodId: mo.prodId,
+            itemId: mo.itemId,
+            exceptionType: "PAST_DUE_SCHEDULED",
+            severity: "WARNING",
+            message: `\u5DF2\u8FC7\u4EA4\u671F ${dlvStr}\uFF0C\u4EA7\u7EBF ${line} \u9884\u8BA1\u5B8C\u6210 ${lineFinishDate}`
+          });
+        }
+        results.push({
+          prodId: mo.prodId,
+          itemId: mo.itemId,
+          totalQty: lineTotalQty,
+          dlvDate: dlvStr,
+          prodStatus: mo.prodStatus,
+          prodPoolId: mo.prodPoolId,
+          osmCategory: mo.osmCategory,
+          startDate: lineStartDate,
+          finishDate: lineFinishDate,
+          isOverdue: overdueDays > 0,
+          overdueDays,
+          overdueType,
+          candidateLines: lineCodes.join(","),
+          chosenLine: line,
+          uph,
+          headcount,
+          dailyPlan: dp,
+          extraCapacityPlan: Object.keys(ep).length > 0 ? ep : null,
+          setupTimeUsed: lineSetupHours,
+          // 成本估算（整单级别，每条线记录相同）
+          costEstimate: bestResult.costEstimate
+        });
+      }
     }
   }
   const lineUtilization = lineCodes.map((line) => {
@@ -407,15 +574,18 @@ function scheduleAll(sortedOrders, routeMap, lineCodes, pool) {
       }
       if (hours > 0 && used / hours > 0.95) peakDays.push(dateStr);
     }
-    const orderCount = results.filter((r) => r.chosenLine?.includes(line)).length;
+    const orderCount = results.filter((r) => r.chosenLine === line).length;
     return {
       line,
+      // 全日历利用率（从今天到年底）
       totalCapacityHours: Math.round(totalCapacity * 10) / 10,
       usedHours: Math.round(usedHours * 10) / 10,
       utilizationRate: totalCapacity > 0 ? Math.round(usedHours / totalCapacity * 1e3) / 10 : 0,
+      // 活跃期利用率（仅有排产的天）— 体现实际繁忙程度
       activeCapacityHours: Math.round(activeCapacity * 10) / 10,
       activeUsedHours: Math.round(activeUsed * 10) / 10,
       activeRate: activeCapacity > 0 ? Math.round(activeUsed / activeCapacity * 1e3) / 10 : 0,
+      // 排产窗口
       firstActiveDay,
       lastActiveDay,
       orderCount,
@@ -426,18 +596,19 @@ function scheduleAll(sortedOrders, routeMap, lineCodes, pool) {
   return { results, exceptions, lineUtilization };
 }
 async function runScheduling(ctx) {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
   const allOrders = await step1_fetchOrders(ctx);
-  ctx.logger?.info?.(`[Step 1] \u52A0\u8F7D ${allOrders.length} \u6761\u8BA2\u5355`);
+  (_b = (_a = ctx.logger) == null ? void 0 : _a.info) == null ? void 0 : _b.call(_a, `[Step 1] \u52A0\u8F7D ${allOrders.length} \u6761\u8BA2\u5355`);
   const { validOrders, exceptions: valEx } = step2_validate(allOrders);
-  ctx.logger?.info?.(`[Step 2] \u6821\u9A8C\u540E ${validOrders.length} \u6761\u6709\u6548, ${valEx.length} \u6761\u5F02\u5E38`);
+  (_d = (_c = ctx.logger) == null ? void 0 : _c.info) == null ? void 0 : _d.call(_c, `[Step 2] \u6821\u9A8C\u540E ${validOrders.length} \u6761\u6709\u6548, ${valEx.length} \u6761\u5F02\u5E38`);
   const sortedOrders = step3_sort(validOrders);
-  ctx.logger?.info?.(`[Step 3] \u6392\u5E8F\u5B8C\u6210`);
+  (_f = (_e = ctx.logger) == null ? void 0 : _e.info) == null ? void 0 : _f.call(_e, `[Step 3] \u6392\u5E8F\u5B8C\u6210`);
   const routeMap = await step4_fetchRoutes(ctx);
-  ctx.logger?.info?.(`[Step 4] \u52A0\u8F7D ${routeMap.size} \u6761 Assembly \u8DEF\u7EBF`);
+  (_h = (_g = ctx.logger) == null ? void 0 : _g.info) == null ? void 0 : _h.call(_g, `[Step 4] \u52A0\u8F7D ${routeMap.size} \u6761 Assembly \u8DEF\u7EBF`);
   const lineCodes = await step5_fetchLines(ctx);
-  ctx.logger?.info?.(`[Step 5] \u53EF\u7528\u4EA7\u7EBF: ${lineCodes.join(", ")}`);
+  (_j = (_i = ctx.logger) == null ? void 0 : _i.info) == null ? void 0 : _j.call(_i, `[Step 5] \u53EF\u7528\u4EA7\u7EBF: ${lineCodes.join(", ")}`);
   const pool = await step6_buildHourPool(ctx, lineCodes);
-  ctx.logger?.info?.(`[Step 6] \u65E5\u5386\u5929\u6570: ${pool.calendarMap.size}`);
+  (_l = (_k = ctx.logger) == null ? void 0 : _k.info) == null ? void 0 : _l.call(_k, `[Step 6] \u65E5\u5386\u5929\u6570: ${pool.calendarMap.size}`);
   const resultRepo = ctx.db.getRepository("schedule_results_v2");
   const excRepo = ctx.db.getRepository("schedule_exceptions_v2");
   const oldResults = await resultRepo.find({ fields: ["id"], paginate: false });
@@ -448,25 +619,30 @@ async function runScheduling(ctx) {
   if (oldExcs.length > 0) {
     await excRepo.destroy({ filterByTk: oldExcs.map((r) => r.id) });
   }
-  ctx.logger?.info?.(`[Step 6] \u5DF2\u6E05\u7A7A ${oldResults.length} \u6761\u65E7\u7ED3\u679C, ${oldExcs.length} \u6761\u65E7\u5F02\u5E38`);
+  (_n = (_m = ctx.logger) == null ? void 0 : _m.info) == null ? void 0 : _n.call(_m, `[Step 6] \u5DF2\u6E05\u7A7A ${oldResults.length} \u6761\u65E7\u7ED3\u679C, ${oldExcs.length} \u6761\u65E7\u5F02\u5E38`);
   const { results, exceptions: schedEx, lineUtilization } = scheduleAll(sortedOrders, routeMap, lineCodes, pool);
-  ctx.logger?.info?.(`[Step 7-9] \u6392\u4EA7\u5B8C\u6210: ${results.length} \u6761\u7ED3\u679C, ${schedEx.length} \u6761\u5F02\u5E38`);
+  (_p = (_o = ctx.logger) == null ? void 0 : _o.info) == null ? void 0 : _p.call(_o, `[Step 7-9] \u6392\u4EA7\u5B8C\u6210: ${results.length} \u6761\u7ED3\u679C, ${schedEx.length} \u6761\u5F02\u5E38`);
   for (const lu of lineUtilization) {
-    ctx.logger?.info?.(`  \u4EA7\u7EBF ${lu.line}: ${lu.utilizationRate}% \u5229\u7528\u7387, ${lu.orderCount} \u5355, ${lu.peakDayCount} \u5929\u6EE1\u8F7D`);
+    (_r = (_q = ctx.logger) == null ? void 0 : _q.info) == null ? void 0 : _r.call(
+      _q,
+      `  \u4EA7\u7EBF ${lu.line}: ${lu.utilizationRate}% \u5229\u7528\u7387, ${lu.orderCount} \u5355, ${lu.peakDayCount} \u5929\u6EE1\u8F7D`
+    );
   }
   const allExceptions = [...valEx, ...schedEx];
   const now = /* @__PURE__ */ new Date();
   const pad = (n) => n.toString().padStart(2, "0");
-  const runId = `RUN_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const runId = `RUN_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(
+    now.getMinutes()
+  )}${pad(now.getSeconds())}`;
   for (const r of results) r.runId = runId;
   for (const e of allExceptions) e.runId = runId;
   if (results.length > 0) {
     await resultRepo.create({ values: results });
-    ctx.logger?.info?.(`[Step 9] \u5199\u5165 ${results.length} \u6761\u6392\u4EA7\u7ED3\u679C`);
+    (_t = (_s = ctx.logger) == null ? void 0 : _s.info) == null ? void 0 : _t.call(_s, `[Step 9] \u5199\u5165 ${results.length} \u6761\u6392\u4EA7\u7ED3\u679C`);
   }
   if (allExceptions.length > 0) {
     await excRepo.create({ values: allExceptions });
-    ctx.logger?.info?.(`[Step 10] \u5199\u5165 ${allExceptions.length} \u6761\u5F02\u5E38`);
+    (_v = (_u = ctx.logger) == null ? void 0 : _u.info) == null ? void 0 : _v.call(_u, `[Step 10] \u5199\u5165 ${allExceptions.length} \u6761\u5F02\u5E38`);
   }
   const exceptionBreakdown = {};
   for (const e of allExceptions) {
@@ -489,7 +665,7 @@ async function runScheduling(ctx) {
       exceptionBreakdown
     }
   });
-  ctx.logger?.info?.(`[Step 11] \u5199\u5165\u8FD0\u884C\u8BB0\u5F55: ${runId}, \u6210\u529F\u7387 ${successRate}%`);
+  (_x = (_w = ctx.logger) == null ? void 0 : _w.info) == null ? void 0 : _x.call(_w, `[Step 11] \u5199\u5165\u8FD0\u884C\u8BB0\u5F55: ${runId}, \u6210\u529F\u7387 ${successRate}%`);
   ctx.body = {
     success: true,
     runId,
