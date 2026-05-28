@@ -172,7 +172,7 @@ function commitBestResult(
       overdueDays, overdueType,
       candidateLines: allowedLines.join(','), chosenLine: line,
       uph: routeUph,    // DB 存工艺路线标准值（不随人数变化）
-      headcount,        // DB 存实际开工人数
+      headcount,        // DB 存标准基础人力（增加的人力只体现在 dailyPlan 数量上）
       dailyPlan: dp,
       extraCapacityPlan: Object.keys(ep).length > 0 ? ep : null,
       setupTimeUsed: lineSetupHours,
@@ -248,6 +248,14 @@ export async function scheduleAll(
           : strategy.getFallbackLines();
       } else {
         allowedLines = strategy.getFallbackLines();
+      }
+
+      // ESG 物料前缀路由：AMZ-55- 或 55- 开头的物料 → 4F2（替代原 Chicha 客户映射）
+      if (strategy.name === 'ESG') {
+        const itemId = mo.itemId || '';
+        if (/^(AMZ-55-|55-)/i.test(itemId)) {
+          allowedLines = ['4F2'];
+        }
       }
 
       if (allowedLines.length === 0) {
@@ -433,7 +441,8 @@ export async function scheduleAll(
               hist.orderRef, chosenBoostRes, hist.allowedLines, hist.stageName,
               hist.uph,    // routeUph: 前序订单工艺路线标准值（存 DB）
               boostUph,    // effectiveUph: 增人后实际有效座产能（算工时）
-              chosenBoostHc, hist.dlvStr, today,
+              hist.baseHeadcount, // DB 存标准基础人力（增人只体现在 dailyPlan 上）
+              hist.dlvStr, today,
               lineLastItem, lineLoad, lineLastFinish, capacityPool, cfg,
             );
             // commitBestResult 只更新较晚的日期；增加人手后完成更早，需强制更新
@@ -551,7 +560,7 @@ export async function scheduleAll(
         mo, bestResult, allowedLines, stageName,
         uph,                  // routeUph: 工艺路线标准值（存 DB）
         effectiveUphForCommit, // effectiveUph: 实际有效产能（算工时）
-        hcForCommit,
+        headcount,            // 始终使用基础人力（增加的人力只体现在 dailyPlan 数量上）
         dlvStr, today, lineLastItem, lineLoad, lineLastFinish, capacityPool, cfg,
       );
       results.push(...committed);

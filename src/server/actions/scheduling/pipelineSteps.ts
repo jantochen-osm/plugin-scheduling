@@ -119,7 +119,7 @@ export function step3_sort(orders: any[]) {
 // ── Step 4: 收集候选产线 ────────────────────────────────────────────
 /**
  * 从 customer_line_mapping 收集所有本次排产涉及的产线；
- * 若无任何映射则退回策略 fallbackLines。
+ * 同时合并策略 fallbackLines，确保物料前缀路由等非客户映射产线也被纳入产能池。
  */
 export async function step4_collectLines(
   orders: any[],
@@ -127,6 +127,8 @@ export async function step4_collectLines(
   strategy: SchedulingStrategy,
 ): Promise<string[]> {
   const lineSet = new Set<string>();
+
+  // 1. 从 customer_line_mapping 收集
   for (const mo of orders) {
     if (mo.keyAccount) {
       const mapping = await ruleEngine.getCustomerLines(mo.keyAccount);
@@ -135,9 +137,12 @@ export async function step4_collectLines(
       }
     }
   }
-  if (lineSet.size === 0) {
-    strategy.getFallbackLines().forEach((l) => lineSet.add(l));
+
+  // 2. 始终合并 fallbackLines（如 ESG 4F2 可能来自物料前缀路由而非客户映射）
+  for (const line of strategy.getFallbackLines()) {
+    lineSet.add(line);
   }
+
   return [...lineSet].sort();
 }
 

@@ -2,14 +2,14 @@
  * ESGStrategy — ESG 品类排产策略
  *
  * ESG 产线分配规则：
- *   4F1 → Amazon
- *   4F2 → Chicha / SharkNinja
- *   4F4 → Shure
- *   4F6 → Jano Life
+ *   4F1 → Amazon（customer_line_mapping）
+ *   4F2 → AMZ-55- / 55- 开头的物料（物料前缀路由，scheduleAll 中判断）
+ *   4F4 → Shure（customer_line_mapping）
+ *   4F6 → Jano Life（customer_line_mapping）
  *   4F3, 4F5 → 试产线，不参与排产
  *
  * 客户→产线映射通过 customer_line_mapping 表维护，
- * scheduleAll 中会按 keyAccount 限缩候选产线。
+ * 物料前缀路由在 scheduleAll 的产线获取阶段优先覆盖。
  */
 
 import type { SchedulingStrategy, SchedulingConfig } from './SchedulingStrategy';
