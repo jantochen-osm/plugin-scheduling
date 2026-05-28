@@ -21,6 +21,7 @@ const EE_CONFIG: SchedulingConfig = {
     setupAffinity: 0.5,
     loadBalance: 0.2,
   },
+  maxHeadcountFactor: 4, // 最多尝试 4 倍基准人数（+1人/次递增）
 };
 
 

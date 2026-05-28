@@ -37,6 +37,15 @@ export interface SchedulingConfig {
     setupAffinity: number;
     loadBalance: number;
   };
+  /**
+   * 人手增加上限（相对于工艺路线基准人数的倍数）。
+   *
+   * 当产能不足时，算法按人数逐步增加（每次 +1 人）直到满足交期或达到上限。
+   * 例如：baseHeadcount=1, maxHeadcountFactor=4 → 最多尝试 1、2、3、4 人。
+   *
+   * 默认值：4（最多 4 倍基准人数）
+   */
+  maxHeadcountFactor?: number;
 }
 
 
