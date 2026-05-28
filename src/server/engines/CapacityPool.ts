@@ -17,6 +17,28 @@
 
 import { RuleEngine, CalendarException } from './RuleEngine';
 
+// ─── 日期详情 ───
+
+export type DayType = 'WORKDAY' | 'WEEKEND' | 'HOLIDAY' | 'MAINTENANCE' | 'CHANGEOVER' | 'IDLE';
+
+export interface DayInfo {
+  date: string;
+  dayOfWeek: number;           // 0=Sun ... 6=Sat
+  isWorkday: boolean;          // 来自 md_work_calendars
+  isSchedulable: boolean;
+  baseWorkHours: number;       // 日历基础工时（异常前）
+  availableHours: number;      // 异常后可用工时（产线无关，取全线值）
+  exceptionType: DayType | null;
+  exceptionRemarks: string | null;
+  dayType: DayType;
+  dayLabel: string;
+}
+
+const DAY_LABELS: Record<string, string> = {
+  '0': '周日', '1': '周一', '2': '周二', '3': '周三',
+  '4': '周四', '5': '周五', '6': '周六',
+};
+
 export interface CapacitySnapshot {
   line: string;
   date: string;
@@ -36,6 +58,12 @@ export class CapacityPool {
   /** date → base work hours (from md_work_calendars, before exceptions) */
   private workHoursByDate: Map<string, number> = new Map();
 
+  /** date → exception info（补零日查询用） */
+  private exceptionByDate: Map<string, { type: string; remarks: string }> = new Map();
+
+  /** date → work calendar day info（补零日查询用） */
+  private calDayByDate: Map<string, { isWorkday: boolean; isSchedulable: boolean; dayOfWeek: number; workHours: number }> = new Map();
+
   /** 已加载的日期范围 */
   private dateRange: string[] = [];
   private lineCodes: string[] = [];
@@ -54,6 +82,8 @@ export class CapacityPool {
   async init(lineCodes: string[], startDate: string, endDate: string): Promise<void> {
     this.lineCodes = [...lineCodes];
     this.pool.clear();
+    this.exceptionByDate.clear();
+    this.calDayByDate.clear();
     this.dateRange = this.generateDateRange(startDate, endDate);
 
     for (const date of this.dateRange) {
@@ -64,9 +94,21 @@ export class CapacityPool {
         baseHours = 0;
       }
       this.workHoursByDate.set(date, baseHours);
+      this.calDayByDate.set(date, {
+        isWorkday: !!calDay?.isWorkday,
+        isSchedulable: !!calDay?.isSchedulable,
+        dayOfWeek: calDay?.dayOfWeek ?? 0,
+        workHours: calDay?.workHours ?? this.baseHoursPerDay,
+      });
 
       // 2. 检查 calendar_exceptions 覆盖
       const exception = await this.ruleEngine.getCalendarException(date);
+      if (exception) {
+        this.exceptionByDate.set(date, {
+          type: exception.exceptionType,
+          remarks: exception.remarks || '',
+        });
+      }
 
       for (const line of lineCodes) {
         const key = `${line}_${date}`;
@@ -148,6 +190,65 @@ export class CapacityPool {
   /** 获取某日的基础工时（来自 md_work_calendars） */
   getWorkHoursForDate(date: string): number {
     return this.workHoursByDate.get(date) ?? this.baseHoursPerDay;
+  }
+
+  /**
+   * 获取某日期的完整信息（用于 dailyPlanDetail 构建）。
+   * 产线无关，返回日历级信息；CHANGEOVER 场景由调用方额外标注。
+   */
+  getDayInfo(date: string): DayInfo {
+    const cal = this.calDayByDate.get(date);
+    const dayOfWeek = cal?.dayOfWeek ?? 0;
+    const isWorkday = cal?.isWorkday ?? true;
+    const isSchedulable = cal?.isSchedulable ?? true;
+    const baseWorkHours = this.workHoursByDate.get(date) ?? this.baseHoursPerDay;
+    const exc = this.exceptionByDate.get(date);
+
+    const availableHours = isSchedulable ? baseWorkHours : 0;
+
+    // 推断 dayType
+    let dayType: DayType;
+    let dayLabel: string;
+    const dowLabel = DAY_LABELS[String(dayOfWeek)] || '';
+
+    if (exc) {
+      dayType = exc.type as DayType;
+      dayLabel = exc.remarks
+        ? `${this.getExceptionLabel(exc.type)}（${exc.remarks}）`
+        : this.getExceptionLabel(exc.type);
+    } else if (!isSchedulable && !isWorkday) {
+      dayType = 'WEEKEND';
+      dayLabel = dowLabel;
+    } else if (!isSchedulable) {
+      dayType = 'IDLE';
+      dayLabel = dowLabel;
+    } else {
+      dayType = 'WORKDAY';
+      dayLabel = dowLabel;
+    }
+
+    return {
+      date,
+      dayOfWeek,
+      isWorkday,
+      isSchedulable,
+      baseWorkHours,
+      availableHours,
+      exceptionType: exc ? (exc.type as DayType) : null,
+      exceptionRemarks: exc?.remarks || null,
+      dayType,
+      dayLabel,
+    };
+  }
+
+  /** 异常类型中文标签 */
+  private getExceptionLabel(type: string): string {
+    switch (type) {
+      case 'HOLIDAY': return '假期';
+      case 'MAINTENANCE': return '设备保养';
+      case 'CHANGEOVER': return '产品换线';
+      default: return type;
+    }
   }
 
   /** 获取某线全部日期的快照 */

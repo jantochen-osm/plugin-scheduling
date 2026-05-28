@@ -94,7 +94,8 @@ function rankCandidateLines(
  *
  * @param routeUph      工艺路线标准 UPH（存入 DB，不随人数变化）
  * @param effectiveUph  实际有效 UPH（= erpupph × 实际人数，用于产能分配计算）
- * @param headcount     实际开工人数（存入 DB）
+ * @param headcount     标准开工人数（存入 DB）
+ * @param actualHeadcount 实际开工人数（含增人，用于 dailyPlanDetail 计算展示）
  */
 function commitBestResult(
   mo: any,
@@ -104,6 +105,7 @@ function commitBestResult(
   routeUph: number,
   effectiveUph: number,
   headcount: number,
+  actualHeadcount: number,
   dlvStr: string,
   today: string,
   lineLastItem: Record<string, string>,
@@ -134,6 +136,10 @@ function commitBestResult(
     let lineFinish = '';
     let lineQty = 0;
 
+    // 构建 dailyPlanDetail（计算构成明细）
+    const perPersonUph = headcount > 0 ? routeUph / headcount : 0;
+    const detailMap: Record<string, any> = {};
+
     // 正式分配产能（tryScheduleStage 已 rollback，此处重新 allocate）
     // 注意：使用 effectiveUph 计算工时（含人数倍增的实际产能）
     for (const dateStr of Object.keys(dp).sort()) {
@@ -144,6 +150,28 @@ function commitBestResult(
       const standardQty = Math.max(0, qty - extraQty);
       const totalH = setupH + standardQty / effectiveUph;
       capacityPool.allocate(line, dateStr, Math.min(totalH, capacityPool.getAvailableHours(line, dateStr) + (setupH || 0)));
+
+      // 每日计算构成
+      const dayInfo = capacityPool.getDayInfo(dateStr);
+      detailMap[dateStr] = {
+        totalQty: qty,
+        standardQty,
+        overtimeQty: extraQty,
+        baseWorkHours: dayInfo.baseWorkHours,
+        overtimeHours: effectiveUph > 0 ? Math.round((extraQty / effectiveUph) * 100) / 100 : 0,
+        setupHours: setupH,
+        effectiveHours: effectiveUph > 0
+          ? Math.round(((standardQty / effectiveUph) + setupH) * 100) / 100
+          : 0,
+        uph: routeUph,
+        perPersonUph: Math.round(perPersonUph * 100) / 100,
+        headcount,
+        actualHeadcount,
+        effectiveUph: Math.round(effectiveUph * 100) / 100,
+        dayType: qty > 0 && extraQty > 0 ? 'OVERTIME' : dayInfo.dayType,
+        dayLabel: dayInfo.dayLabel,
+      };
+
       lineQty += qty;
       if (!lineStart || dateStr < lineStart) lineStart = dateStr;
       if (!lineFinish || dateStr > lineFinish) lineFinish = dateStr;
@@ -174,6 +202,7 @@ function commitBestResult(
       uph: routeUph,    // DB 存工艺路线标准值（不随人数变化）
       headcount,        // DB 存标准基础人力（增加的人力只体现在 dailyPlan 数量上）
       dailyPlan: dp,
+      dailyPlanDetail: detailMap,  // 每日排产计算构成
       extraCapacityPlan: Object.keys(ep).length > 0 ? ep : null,
       setupTimeUsed: lineSetupHours,
       costEstimate: bestResult.costEstimate,
@@ -442,6 +471,7 @@ export async function scheduleAll(
               hist.uph,    // routeUph: 前序订单工艺路线标准值（存 DB）
               boostUph,    // effectiveUph: 增人后实际有效座产能（算工时）
               hist.baseHeadcount, // DB 存标准基础人力（增人只体现在 dailyPlan 上）
+              chosenBoostHc,      // actualHeadcount: 增人后实际人数
               hist.dlvStr, today,
               lineLastItem, lineLoad, lineLastFinish, capacityPool, cfg,
             );
@@ -561,6 +591,7 @@ export async function scheduleAll(
         uph,                  // routeUph: 工艺路线标准值（存 DB）
         effectiveUphForCommit, // effectiveUph: 实际有效产能（算工时）
         headcount,            // 始终使用基础人力（增加的人力只体现在 dailyPlan 数量上）
+        hcForCommit,          // actualHeadcount: 实际人数（用于 dailyPlanDetail）
         dlvStr, today, lineLastItem, lineLoad, lineLastFinish, capacityPool, cfg,
       );
       results.push(...committed);
@@ -609,18 +640,45 @@ export async function scheduleAll(
     }
   }
 
-  // 补齐 dailyPlan：从 startDate 到 finishDate 的所有日期（含 0 产量）
+  // 补齐 dailyPlan + dailyPlanDetail：从 startDate 到 finishDate 的所有日期
   for (const r of results) {
     const dp = r.dailyPlan || {};
+    const detail = r.dailyPlanDetail || {};
     const padded: Record<string, number> = {};
+    const paddedDetail: Record<string, any> = {};
     const cursor = new Date(r.startDate);
     const end = new Date(r.finishDate);
     while (cursor <= end) {
       const d = formatDate(cursor);
       padded[d] = dp[d] || 0;
+      if (detail[d]) {
+        paddedDetail[d] = detail[d];
+      } else {
+        // 零值日期：填充 dayInfo
+        const dayInfo = capacityPool.getDayInfo(d);
+        paddedDetail[d] = {
+          totalQty: 0,
+          standardQty: 0,
+          overtimeQty: 0,
+          baseWorkHours: dayInfo.baseWorkHours,
+          overtimeHours: 0,
+          setupHours: 0,
+          effectiveHours: 0,
+          uph: r.uph || 0,
+          perPersonUph: (r.headcount || 1) > 0
+            ? Math.round(((r.uph || 0) / (r.headcount || 1)) * 100) / 100
+            : 0,
+          headcount: r.headcount || 0,
+          actualHeadcount: 0,
+          effectiveUph: 0,
+          dayType: dayInfo.dayType,
+          dayLabel: dayInfo.dayLabel,
+        };
+      }
       cursor.setDate(cursor.getDate() + 1);
     }
     r.dailyPlan = padded;
+    r.dailyPlanDetail = paddedDetail;
   }
 
   // 产线利用率统计

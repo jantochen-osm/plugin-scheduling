@@ -1,4 +1,4 @@
-/**
+﻿/**
  * runScheduling.ts
  *
  * 排产引擎 HTTP 入口。
@@ -54,7 +54,7 @@ export async function runScheduling(ctx: Context) {
   const allLineUtil: any[] = [];
 
   // ── 3. 逐策略执行排产 Pipeline ───────────────────────────────────
-  for (const strategy of strategies) {
+  for (const strategy of strategies) {  
     ctx.logger?.info?.(`--- Strategy: ${strategy.name} ---`);
 
     // 按策略过滤订单
