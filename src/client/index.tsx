@@ -13,6 +13,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import React, { useState } from 'react';
+import { SchedulingDashboard } from './pages/SchedulingDashboard';
 
 // ============================================================
 // 排产面板子组件
@@ -177,6 +178,15 @@ class RunSchedulingActionModel extends ActionModel {
 }
 
 // ============================================================
+// Block: 排产看板（全局日期轴方案A）
+// ============================================================
+class SchedulingDashboardModel extends BlockModel {
+  renderComponent() {
+    return React.createElement(SchedulingDashboard);
+  }
+}
+
+// ============================================================
 // Field: dailyPlan 可视化
 // ============================================================
 function DailyPlanField(props: any) {
@@ -229,6 +239,7 @@ export class PluginSchedulingClient extends Plugin {
     this.flowEngine.registerModels({
       SchedulingBlockModel,
       RunSchedulingActionModel,
+      SchedulingDashboardModel,  // 新增：排产看板
     });
   }
 }

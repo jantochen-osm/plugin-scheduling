@@ -13,7 +13,7 @@
  *   - invalidateCache() 强制刷新
  */
 
-import type { Context } from '@nocobase/server';
+import type { Context } from '@nocobase/actions';
 
 // ─── 类型定义 ───
 

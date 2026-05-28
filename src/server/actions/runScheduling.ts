@@ -1,4 +1,4 @@
-﻿/**
+/**
  * runScheduling.ts
  *
  * 排产引擎 HTTP 入口。
@@ -17,7 +17,7 @@
  * 核心排产逻辑见 ./scheduling/ 子模块。
  */
 
-import { Context } from '@nocobase/server';
+import type { Context } from '@nocobase/actions';
 import { RuleEngine } from '../engines';
 import { EEStrategy, ESGStrategy, type SchedulingStrategy } from './strategies';
 import {
@@ -91,59 +91,140 @@ export async function runScheduling(ctx: Context) {
     ctx.logger?.info?.(`  Results: ${results.length}, Exceptions: ${schedEx.length}`);
   }
 
-  // ── 4. 写入数据库 ─────────────────────────────────────────────────
+  // ── 4. 计算全局日期范围（仅用于 HTTP 响应，不写入 DB）────────────────
+  let globalStartDate = '';
+  let globalEndDate = '';
+  if (allResults.length > 0) {
+    const starts = allResults.map((r: any) => r.startDate).filter(Boolean).sort();
+    const ends   = allResults.map((r: any) => r.finishDate).filter(Boolean).sort();
+    globalStartDate = starts[0] || '';
+    globalEndDate   = ends[ends.length - 1] || '';
+  }
+
+  // ── 5. 写入数据库 ─────────────────────────────────────────────────
   const runId = `RUN_${Date.now()}`;
   const resultRepo = ctx.db.getRepository('schedule_results_v2');
   const excRepo = ctx.db.getRepository('schedule_exceptions_v2');
   const runRepo = ctx.db.getRepository('schedule_runs');
 
   // 清空旧数据
-  const oldResults = await resultRepo.find({ fields: ['id'], paginate: false });
-  if (oldResults.length > 0) {
-    await resultRepo.destroy({ filterByTk: oldResults.map((r: any) => r.id) });
+  try {
+    const oldResults = await resultRepo.find({ fields: ['id'], paginate: false });
+    if (oldResults.length > 0) await resultRepo.destroy({ filterByTk: oldResults.map((r: any) => r.id) });
+    ctx.logger?.info?.('[DB] Cleared old results');
+  } catch (e: any) {
+    ctx.logger?.error?.('[DB][ERROR] Clear results_v2: ' + (e?.original?.message || e?.message || e));
+    throw e;
   }
-  const oldExcs = await excRepo.find({ fields: ['id'], paginate: false });
-  if (oldExcs.length > 0) {
-    await excRepo.destroy({ filterByTk: oldExcs.map((r: any) => r.id) });
+  try {
+    const oldExcs = await excRepo.find({ fields: ['id'], paginate: false });
+    if (oldExcs.length > 0) await excRepo.destroy({ filterByTk: oldExcs.map((r: any) => r.id) });
+    ctx.logger?.info?.('[DB] Cleared old exceptions');
+  } catch (e: any) {
+    ctx.logger?.error?.('[DB][ERROR] Clear exceptions_v2: ' + (e?.original?.message || e?.message || e));
+    throw e;
   }
 
-  // 写入本次运行记录
+  // 写入本次运行记录 —— 用 raw SQL 绕过 ORM 字段校验
   const exceptionBreakdown: Record<string, number> = {};
   for (const e of allExc) {
     const t = e.exceptionType || 'UNKNOWN';
     exceptionBreakdown[t] = (exceptionBreakdown[t] || 0) + 1;
   }
-  await runRepo.create({
-    values: {
-      runId,
-      runTime: new Date(),
-      status: allExc.filter((e: any) => e.severity === 'BLOCKER').length === 0 ? 'SUCCESS' : 'PARTIAL',
-      totalOrders: allOrders.length,
-      validOrders: strategies.reduce((sum, s) => sum + s.filterOrders(allOrders).length, 0),
-      scheduledCount: allResults.length,
-      exceptionCount: allExc.length,
-      successRate: allResults.length > 0 ? 100 : 0,
-      lineUtilization: allLineUtil,
-      exceptionBreakdown,
-    },
-  });
-
-  if (allResults.length > 0) {
-    await resultRepo.create({ values: allResults.map((r: any) => ({ ...r, runId })) });
+  const runStatus = allExc.filter((e: any) => e.severity === 'BLOCKER').length === 0 ? 'SUCCESS' : 'PARTIAL';
+  const validCount = strategies.reduce((sum, s) => sum + s.filterOrders(allOrders).length, 0);
+  try {
+    await ctx.db.sequelize.query(
+      `INSERT INTO schedule_runs
+        ("runId", "runTime", status, "totalOrders", "validOrders", "scheduledCount", "exceptionCount", "successRate", "lineUtilization", "exceptionBreakdown")
+       VALUES (:runId, NOW(), :status, :totalOrders, :validOrders, :scheduledCount, :exceptionCount, :successRate, :lineUtilization::json, :exceptionBreakdown::json)`,
+      {
+        replacements: {
+          runId,
+          status: runStatus,
+          totalOrders: allOrders.length,
+          validOrders: validCount,
+          scheduledCount: allResults.length,
+          exceptionCount: allExc.length,
+          successRate: allResults.length > 0 ? 100 : 0,
+          lineUtilization: JSON.stringify(allLineUtil),
+          exceptionBreakdown: JSON.stringify(exceptionBreakdown),
+        },
+      },
+    );
+    ctx.logger?.info?.('[DB] Inserted schedule_runs record via raw SQL');
+  } catch (e: any) {
+    ctx.logger?.error?.('[DB][ERROR] Insert schedule_runs: ' + (e?.original?.message || e?.message || String(e)));
+    throw e;
   }
+
+  // 写入排产结果 —— 用 raw SQL 确保字段与 DB 列严格对齐
+  if (allResults.length > 0) {
+    try {
+      // 构建批量 INSERT values
+      const rows = allResults.map((r: any) => ({
+        runId,
+        prodId:         r.prodId         ?? null,
+        itemId:         r.itemId         ?? null,
+        totalQty:       r.totalQty       ?? null,
+        dlvDate:        r.dlvDate        ?? null,
+        prodStatus:     r.prodStatus     ?? null,
+        prodPoolId:     r.prodPoolId     ?? null,
+        osmCategory:    r.osmCategory    ?? null,
+        startDate:      r.startDate      ?? null,
+        finishDate:     r.finishDate     ?? null,
+        isOverdue:      r.isOverdue      ?? false,
+        overdueDays:    r.overdueDays    ?? 0,
+        overdueType:    r.overdueType    ?? null,
+        candidateLines: r.candidateLines ?? null,
+        chosenLine:     r.chosenLine     ?? null,
+        uph:            r.uph            ?? null,
+        headcount:      r.headcount      ?? null,
+        dailyPlan:      JSON.stringify(r.dailyPlan    ?? {}),
+        dailyPlanDetail:JSON.stringify(r.dailyPlanDetail ?? {}),
+      }));
+
+      for (const row of rows) {
+        await ctx.db.sequelize.query(
+          `INSERT INTO schedule_results_v2
+            ("runId", "prodId", "itemId", "totalQty", "dlvDate", "prodStatus", "prodPoolId", "osmCategory",
+             "startDate", "finishDate", "isOverdue", "overdueDays", "overdueType",
+             "candidateLines", "chosenLine", uph, headcount, "dailyPlan", "dailyPlanDetail")
+           VALUES
+            (:runId, :prodId, :itemId, :totalQty, :dlvDate::date, :prodStatus, :prodPoolId, :osmCategory,
+             :startDate::date, :finishDate::date, :isOverdue, :overdueDays, :overdueType,
+             :candidateLines, :chosenLine, :uph, :headcount, :dailyPlan::json, :dailyPlanDetail::json)`,
+          { replacements: row },
+        );
+      }
+      ctx.logger?.info?.('[DB] Inserted ' + allResults.length + ' results via raw SQL');
+    } catch (e: any) {
+      ctx.logger?.error?.('[DB][ERROR] Insert schedule_results_v2: ' + (e?.original?.message || e?.message || String(e)));
+      throw e;
+    }
+  }
+
   if (allExc.length > 0) {
-    await excRepo.create({ values: allExc.map((e: any) => ({ ...e, runId })) });
+    try {
+      await excRepo.create({ values: allExc.map((e: any) => ({ ...e, runId })) });
+      ctx.logger?.info?.('[DB] Inserted ' + allExc.length + ' exceptions');
+    } catch (e: any) {
+      ctx.logger?.error?.('[DB][ERROR] Insert exceptions_v2: ' + (e?.original?.message || e?.message || String(e)));
+      throw e;
+    }
   }
 
   ctx.logger?.info?.(`[Done] ${allResults.length} results, ${allExc.length} exceptions`);
 
-  // ── 5. HTTP 响应 ──────────────────────────────────────────────────
+  // ── 6. HTTP 响应 ──────────────────────────────────────────────────
   ctx.body = {
     runId,
     strategies: strategies.map((s) => s.name),
     totalOrders: allOrders.length,
     scheduledCount: allResults.length,
     exceptionCount: allExc.length,
+    globalStartDate,
+    globalEndDate,
     exceptions: allExc,
     lineUtilization: allLineUtil,
   };

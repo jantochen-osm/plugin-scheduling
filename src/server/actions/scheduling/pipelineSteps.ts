@@ -9,7 +9,7 @@
  *   Step 5 — 初始化产能池（CapacityPool）
  */
 
-import { Context } from '@nocobase/server';
+import type { Context } from '@nocobase/actions';
 import { RuleEngine, CapacityPool } from '../../engines';
 import type { SchedulingStrategy } from '../strategies';
 import { formatDate, addDays, getToday, getTodayStr, SCHEDULING_CONFIG } from './config';

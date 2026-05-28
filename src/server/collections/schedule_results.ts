@@ -82,12 +82,36 @@ export default defineCollection({
       name: 'chosenLine',
       title: '选中产线',
     },
+    // ── 工艺参数 ──
+    {
+      type: 'float',
+      name: 'uph',
+      title: 'UPH（每小时产出）',
+    },
+    {
+      type: 'integer',
+      name: 'headcount',
+      title: '开工人数',
+    },
     // ── 每日排产计划（JSON: {"2026-05-15": 3000, "2026-05-16": 2000}）──
     {
       type: 'json',
       interface: 'json',
       name: 'dailyPlan',
       title: '每日排产',
+    },
+    // ── 每日排产明细（含工时构成、日期类型等）──
+    {
+      type: 'json',
+      interface: 'json',
+      name: 'dailyPlanDetail',
+      title: '每日排产明细',
+    },
+    // ── Run 关联 ──
+    {
+      type: 'string',
+      name: 'runId',
+      title: '排产运行ID',
     },
   ],
 });

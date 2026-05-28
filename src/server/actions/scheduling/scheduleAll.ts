@@ -19,7 +19,7 @@
  *               早日释放产线，再重试当前单
  */
 
-import { Context } from '@nocobase/server';
+import type { Context } from '@nocobase/actions';
 import { RuleEngine, CapacityPool, StageDependencyManager } from '../../engines';
 import type { SchedulingStrategy } from '../strategies';
 import { addDays, formatDate, getTodayStr, SCHEDULING_CONFIG } from './config';
@@ -279,7 +279,10 @@ export async function scheduleAll(
         allowedLines = strategy.getFallbackLines();
       }
 
-      // ESG 物料前缀路由：AMZ-55- 或 55- 开头的物料 → 4F2（替代原 Chicha 客户映射）
+      // ESG 物料前缀路由：Amazon 客户中 itemId 以 AMZ-55- 或 55- 开头的物料
+      // → 强制走 4F2（工厂内部称为 Chicha 线），优先级高于 customer_line_mapping 客户映射。
+      // 注意：这类订单的 keyAccount 仍为 "Amazon"，并非独立客户，
+      //       Chicha 是工厂对该产线/产品系列的内部叫法。
       if (strategy.name === 'ESG') {
         const itemId = mo.itemId || '';
         if (/^(AMZ-55-|55-)/i.test(itemId)) {
@@ -640,46 +643,29 @@ export async function scheduleAll(
     }
   }
 
-  // 补齐 dailyPlan + dailyPlanDetail：从 startDate 到 finishDate 的所有日期
+  // 清理 dailyPlan + dailyPlanDetail：
+  //   - dailyPlan 只保留 qty > 0 的日期（已有实际排产）
+  //   - dailyPlanDetail 只保留 qty > 0 的日期（零值日期如周末/节假日不输出）
+  //   - startDate/finishDate 已按 UTC 存储，前端可直接用于确定范围，不需要在这里补零
   for (const r of results) {
     const dp = r.dailyPlan || {};
     const detail = r.dailyPlanDetail || {};
-    const padded: Record<string, number> = {};
-    const paddedDetail: Record<string, any> = {};
-    const cursor = new Date(r.startDate);
-    const end = new Date(r.finishDate);
-    while (cursor <= end) {
-      const d = formatDate(cursor);
-      padded[d] = dp[d] || 0;
-      if (detail[d]) {
-        paddedDetail[d] = detail[d];
-      } else {
-        // 零值日期：填充 dayInfo
-        const dayInfo = capacityPool.getDayInfo(d);
-        paddedDetail[d] = {
-          totalQty: 0,
-          standardQty: 0,
-          overtimeQty: 0,
-          baseWorkHours: dayInfo.baseWorkHours,
-          overtimeHours: 0,
-          setupHours: 0,
-          effectiveHours: 0,
-          uph: r.uph || 0,
-          perPersonUph: (r.headcount || 1) > 0
-            ? Math.round(((r.uph || 0) / (r.headcount || 1)) * 100) / 100
-            : 0,
-          headcount: r.headcount || 0,
-          actualHeadcount: 0,
-          effectiveUph: 0,
-          dayType: dayInfo.dayType,
-          dayLabel: dayInfo.dayLabel,
-        };
+
+    // 只保留有实际产量的日期
+    const cleanPlan: Record<string, number> = {};
+    const cleanDetail: Record<string, any> = {};
+
+    for (const [d, qty] of Object.entries(dp)) {
+      if ((qty as number) > 0) {
+        cleanPlan[d] = qty as number;
+        if (detail[d]) cleanDetail[d] = detail[d];
       }
-      cursor.setDate(cursor.getDate() + 1);
     }
-    r.dailyPlan = padded;
-    r.dailyPlanDetail = paddedDetail;
+
+    r.dailyPlan = cleanPlan;
+    r.dailyPlanDetail = cleanDetail;
   }
+
 
   // 产线利用率统计
   const lineUtilization = lineCodes.map((line) => {
