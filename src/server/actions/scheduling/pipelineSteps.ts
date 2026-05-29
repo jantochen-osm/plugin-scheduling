@@ -15,9 +15,16 @@ import type { SchedulingStrategy } from '../strategies';
 import { formatDate, addDays, getToday, getTodayStr, SCHEDULING_CONFIG } from './config';
 
 // ── Step 1: 拉取订单 ────────────────────────────────────────────────
-export async function step1_fetchOrders(ctx: Context) {
+/**
+ * 从 dn_production_order_ds 拉取订单。
+ * @param prodIds  指定订单 ID 列表（prodid 字段）；不传或空数组 = 全量
+ */
+export async function step1_fetchOrders(ctx: Context, prodIds?: string[]) {
   const repo = ctx.db.getRepository('dn_production_order_ds');
-  const rows = (await repo.find({ paginate: false })) as any[];
+  const filter: any = prodIds && prodIds.length > 0
+    ? { prodid: { $in: prodIds } }   // 指定订单
+    : {};                             // 全量（兜底，不传 prodIds 时）
+  const rows = (await repo.find({ paginate: false, filter })) as any[];
   return rows.map((r: any) => ({
     prodId: r.prodid,
     itemId: r.itemid,
@@ -35,12 +42,15 @@ export async function step1_fetchOrders(ctx: Context) {
 
 // ── Step 2: 校验 & 富化 ─────────────────────────────────────────────
 /**
- * 过滤规则（任一触发 → 进入 exceptions，不排产）：
- *   - dlvDate 为空
- *   - dlvDate < today（已逾期）
- *   - qtySched ≤ 0
- *   - ESG 订单缺少 keyAccount
- *   - dn_operrouteline 无该产品路线
+ * 校验规则（BLOCKER → 进入 exceptions，不排产）：
+ *   - dlvDate 为空                              → MISSING_DLV_DATE  BLOCKER
+ *   - qtySched ≤ 0                             → INVALID_QTY       BLOCKER
+ *   - ESG 订单缺少 keyAccount                  → MISSING_KEY_ACCT  BLOCKER
+ *   - dn_operrouteline 无该产品路线            → NO_ROUTE          BLOCKER
+ *
+ * WARNING（记录但仍参与排产）：
+ *   - dlvDate < today（逾期）                  → PAST_DLV_DATE     WARNING
+ *     逾期订单在 step3 中获得最高优先级（overdueDays 降序第 1 排序键）
  *
  * 通过校验的订单附加 `_stages: [{ stageName: 'Assembly', stageSequence: 1 }]`
  */
@@ -51,12 +61,9 @@ export async function step2_validateAndEnrich(orders: any[], ctx: Context) {
   today.setHours(0, 0, 0, 0);
 
   for (const mo of orders) {
+    // ── BLOCKER 校验 ──────────────────────────────────────────────────
     if (!mo.dlvDate) {
       exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'MISSING_DLV_DATE', severity: 'BLOCKER', message: 'DlvDate is empty' });
-      continue;
-    }
-    if (new Date(mo.dlvDate) < today) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'PAST_DLV_DATE', severity: 'BLOCKER', message: `DlvDate=${mo.dlvDate} past due` });
       continue;
     }
     if (mo.qtySched <= 0) {
@@ -73,6 +80,17 @@ export async function step2_validateAndEnrich(orders: any[], ctx: Context) {
     if (!hasRoute) {
       exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'NO_ROUTE', severity: 'BLOCKER', message: `No route for ${mo.itemId}` });
       continue;
+    }
+
+    // ── WARNING 校验（记录但不阻断，订单仍参与排产）───────────────────
+    if (new Date(mo.dlvDate) < today) {
+      exceptions.push({
+        prodId: mo.prodId, itemId: mo.itemId,
+        exceptionType: 'PAST_DLV_DATE',
+        severity: 'WARNING',
+        message: `DlvDate=${mo.dlvDate} past due, scheduled with highest priority`,
+      });
+      // 不 continue — 逾期订单仍进入排产，step3 会按 overdueDays 降序给予最高优先级
     }
 
     valid.push({ ...mo, _stages: [{ stageName: 'Assembly', stageSequence: 1 }] });
