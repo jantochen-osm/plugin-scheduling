@@ -16,6 +16,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import React, { useState } from 'react';
+import SchedulingGantt from './components/SchedulingGantt';
 
 // ============================================================
 // 排产面板子组件
@@ -246,6 +247,16 @@ function DailyPlanField(props: any) {
 }
 
 // ============================================================
+// Block: 排产甘特图
+// ============================================================
+class SchedulingGanttBlockModel extends BlockModel {
+  renderComponent() {
+    const api = (this as any).context?.api;
+    return <SchedulingGantt api={api} />;
+  }
+}
+
+// ============================================================
 // Plugin 入口
 // ============================================================
 export class PluginSchedulingClient extends Plugin {
@@ -256,6 +267,7 @@ export class PluginSchedulingClient extends Plugin {
     // 注册 flow-engine models
     this.flowEngine.registerModels({
       SchedulingBlockModel,
+      SchedulingGanttBlockModel,
       RunSchedulingActionModel,
     });
   }
