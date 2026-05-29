@@ -1,6 +1,7 @@
 import { Plugin } from '@nocobase/server';
 import { runScheduling } from './actions/runScheduling';
 import { validateSchedule } from './actions/validateSchedule';
+import { adjustResult } from './actions/adjustResult';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -59,13 +60,14 @@ export class PluginSchedulingServer extends Plugin {
       actions: {
         run: runScheduling,
         validate: validateSchedule,
+        adjustResult,  // 人工调整排产结果
       },
     });
 
-    // 开放权限（MVP 阶段 loggedIn 即可）
-    this.app.acl.allow('scheduling', ['run', 'validate'], 'loggedIn');
+    // 开放权限（loggedIn 即可；角色细化由 NocoBase 管理界面配置）
+    this.app.acl.allow('scheduling', ['run', 'validate', 'adjustResult'], 'loggedIn');
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');
-    this.app.acl.allow('schedule_results_v2', ['list', 'get'], 'loggedIn');
+    this.app.acl.allow('schedule_results_v2', ['list', 'get', 'update'], 'loggedIn');
     this.app.acl.allow('schedule_exceptions_v2', ['list', 'get'], 'loggedIn');
   }
 }

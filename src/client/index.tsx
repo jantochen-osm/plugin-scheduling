@@ -5,7 +5,10 @@ import {
   ActionSceneEnum,
   Plugin,
 } from '@nocobase/client';
-import { ButtonProps, Button, Space, Card, Statistic, Row, Col, Alert, Spin } from 'antd';
+import {
+  ButtonProps, Button, Space, Card, Statistic, Row, Col, Alert, Spin, Modal,
+} from 'antd';
+
 import {
   PlayCircleOutlined,
   CheckCircleOutlined,
@@ -13,7 +16,6 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import React, { useState } from 'react';
-import { SchedulingDashboard } from './pages/SchedulingDashboard';
 
 // ============================================================
 // 排产面板子组件
@@ -26,6 +28,31 @@ function SchedulingPanel({ api }: { api: any }) {
 
   const handleRun = () => {
     if (!api) { setError('No API client'); return; }
+
+    // 若已有排产结果，提示覆盖
+    Modal.confirm({
+      title: '⚠️ 确认执行排产',
+      icon: React.createElement(WarningOutlined, { style: { color: '#faad14' } }),
+      content: React.createElement(
+        Space,
+        { direction: 'vertical', style: { width: '100%' } },
+        React.createElement('p', { style: { margin: 0 } },
+          '本次排产将', React.createElement('strong', null, '清空并重新生成'), '所有排产结果。',
+        ),
+        React.createElement(Alert, {
+          type: 'warning',
+          showIcon: true,
+          message: '若已有人工调整的记录，执行后将被覆盖，无法恢复。',
+        }),
+      ),
+      okText: '确认执行',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => doActualRun(),
+    });
+  };
+
+  const doActualRun = () => {
     setLoading(true);
     setError(null);
     const params: any = {};
@@ -178,15 +205,6 @@ class RunSchedulingActionModel extends ActionModel {
 }
 
 // ============================================================
-// Block: 排产看板（全局日期轴方案A）
-// ============================================================
-class SchedulingDashboardModel extends BlockModel {
-  renderComponent() {
-    return React.createElement(SchedulingDashboard);
-  }
-}
-
-// ============================================================
 // Field: dailyPlan 可视化
 // ============================================================
 function DailyPlanField(props: any) {
@@ -239,7 +257,6 @@ export class PluginSchedulingClient extends Plugin {
     this.flowEngine.registerModels({
       SchedulingBlockModel,
       RunSchedulingActionModel,
-      SchedulingDashboardModel,  // 新增：排产看板
     });
   }
 }

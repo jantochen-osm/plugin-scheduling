@@ -33,14 +33,9 @@ module.exports = __toCommonJS(plugin_exports);
 var import_server = require("@nocobase/server");
 var import_runScheduling = require("./actions/runScheduling");
 var import_validateSchedule = require("./actions/validateSchedule");
-var import_path = require("path");
+var import_adjustResult = require("./actions/adjustResult");
 class PluginSchedulingServer extends import_server.Plugin {
   async beforeLoad() {
-    // Collections (production_stages, product_stage_mapping, customer_line_mapping,
-    // calendar_exceptions) are created via NocoBase admin UI or REST API.
-    // They are NOT registered here via db.import() to ensure they appear in the
-    // admin collection manager as user-managed collections.
-  }
   }
   async install() {
     console.log("Seeding initial data for Task 1.1...");
@@ -51,17 +46,6 @@ class PluginSchedulingServer extends import_server.Plugin {
         values: [
           { stageId: "STAGE_001", stageName: "Assembly", stageSequence: 1, remarks: "SMT & Assembly" },
           { stageId: "STAGE_002", stageName: "Package", stageSequence: 2, remarks: "Packaging" }
-        ]
-      });
-    }
-    const ProductStageMapping = db.getRepository("product_stage_mapping");
-    if (ProductStageMapping && await ProductStageMapping.count() === 0) {
-      await ProductStageMapping.create({
-        values: [
-          { productCode: "FA014A02", stageName: "Assembly", candidateLines: ["3F3", "3F4", "3F5", "3F6"], isFixed: false },
-          { productCode: "FA014A02", stageName: "Package", candidateLines: ["1F1", "1F2", "1F3"], isFixed: false },
-          { productCode: "FA015B01", stageName: "Assembly", candidateLines: ["ESG_LINE_1", "ESG_LINE_2"], isFixed: false },
-          { productCode: "FA015B01", stageName: "Package", candidateLines: ["ESG_LINE_1"], isFixed: true }
         ]
       });
     }
@@ -90,12 +74,14 @@ class PluginSchedulingServer extends import_server.Plugin {
       name: "scheduling",
       actions: {
         run: import_runScheduling.runScheduling,
-        validate: import_validateSchedule.validateSchedule
+        validate: import_validateSchedule.validateSchedule,
+        adjustResult: import_adjustResult.adjustResult
+        // 人工调整排产结果
       }
     });
-    this.app.acl.allow("scheduling", ["run", "validate"], "loggedIn");
+    this.app.acl.allow("scheduling", ["run", "validate", "adjustResult"], "loggedIn");
     this.app.acl.allow("schedule_runs", ["list", "get"], "loggedIn");
-    this.app.acl.allow("schedule_results_v2", ["list", "get"], "loggedIn");
+    this.app.acl.allow("schedule_results_v2", ["list", "get", "update"], "loggedIn");
     this.app.acl.allow("schedule_exceptions_v2", ["list", "get"], "loggedIn");
   }
 }

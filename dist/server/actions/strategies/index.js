@@ -24,46 +24,16 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var customer_line_mapping_exports = {};
-__export(customer_line_mapping_exports, {
-  default: () => customer_line_mapping_default
+var strategies_exports = {};
+__export(strategies_exports, {
+  EEStrategy: () => import_EEStrategy.EEStrategy,
+  ESGStrategy: () => import_ESGStrategy.ESGStrategy
 });
-module.exports = __toCommonJS(customer_line_mapping_exports);
-var import_database = require("@nocobase/database");
-var customer_line_mapping_default = (0, import_database.defineCollection)({
-  name: "customer_line_mapping",
-  title: "\u5BA2\u6237\u4EA7\u7EBF\u6620\u5C04",
-  dumpRules: "required",
-  shared: true,
-  filterTargetKey: "id",
-  fields: [
-    {
-      type: "string",
-      name: "keyAccount",
-      title: "\u5BA2\u6237\u540D\u79F0"
-    },
-    {
-      type: "string",
-      name: "osmCategory",
-      title: "\u5206\u7C7B",
-      defaultValue: "ESG"
-    },
-    {
-      type: "json",
-      interface: "json",
-      name: "assignedLines",
-      title: "\u5206\u914D\u4EA7\u7EBF",
-      description: '\u4EA7\u7EBFID\u6570\u7EC4\uFF0C\u4F8B\u5982 ["ESG_LINE_1"]'
-    },
-    {
-      type: "string",
-      name: "remarks",
-      title: "\u5907\u6CE8"
-    }
-  ],
-  indexes: [
-    {
-      fields: ["keyAccount"]
-    }
-  ]
+module.exports = __toCommonJS(strategies_exports);
+var import_EEStrategy = require("./EEStrategy");
+var import_ESGStrategy = require("./ESGStrategy");
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  EEStrategy,
+  ESGStrategy
 });

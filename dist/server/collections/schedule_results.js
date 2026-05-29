@@ -112,12 +112,36 @@ var schedule_results_default = (0, import_database.defineCollection)({
       name: "chosenLine",
       title: "\u9009\u4E2D\u4EA7\u7EBF"
     },
+    // ── 工艺参数 ──
+    {
+      type: "float",
+      name: "uph",
+      title: "UPH\uFF08\u6BCF\u5C0F\u65F6\u4EA7\u51FA\uFF09"
+    },
+    {
+      type: "integer",
+      name: "headcount",
+      title: "\u5F00\u5DE5\u4EBA\u6570"
+    },
     // ── 每日排产计划（JSON: {"2026-05-15": 3000, "2026-05-16": 2000}）──
     {
       type: "json",
       interface: "json",
       name: "dailyPlan",
       title: "\u6BCF\u65E5\u6392\u4EA7"
+    },
+    // ── 每日排产明细（含工时构成、日期类型等）──
+    {
+      type: "json",
+      interface: "json",
+      name: "dailyPlanDetail",
+      title: "\u6BCF\u65E5\u6392\u4EA7\u660E\u7EC6"
+    },
+    // ── Run 关联 ──
+    {
+      type: "string",
+      name: "runId",
+      title: "\u6392\u4EA7\u8FD0\u884CID"
     }
   ]
 });

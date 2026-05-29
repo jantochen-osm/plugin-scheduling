@@ -75,7 +75,6 @@ var calendar_exceptions_default = (0, import_database.defineCollection)({
   ],
   indexes: [
     {
-      type: "B-tree",
       fields: ["exceptionDate"]
     }
   ]

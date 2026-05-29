@@ -24,46 +24,46 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var customer_line_mapping_exports = {};
-__export(customer_line_mapping_exports, {
-  default: () => customer_line_mapping_default
+var EEStrategy_exports = {};
+__export(EEStrategy_exports, {
+  EEStrategy: () => EEStrategy
 });
-module.exports = __toCommonJS(customer_line_mapping_exports);
-var import_database = require("@nocobase/database");
-var customer_line_mapping_default = (0, import_database.defineCollection)({
-  name: "customer_line_mapping",
-  title: "\u5BA2\u6237\u4EA7\u7EBF\u6620\u5C04",
-  dumpRules: "required",
-  shared: true,
-  filterTargetKey: "id",
-  fields: [
-    {
-      type: "string",
-      name: "keyAccount",
-      title: "\u5BA2\u6237\u540D\u79F0"
-    },
-    {
-      type: "string",
-      name: "osmCategory",
-      title: "\u5206\u7C7B",
-      defaultValue: "ESG"
-    },
-    {
-      type: "json",
-      interface: "json",
-      name: "assignedLines",
-      title: "\u5206\u914D\u4EA7\u7EBF",
-      description: '\u4EA7\u7EBFID\u6570\u7EC4\uFF0C\u4F8B\u5982 ["ESG_LINE_1"]'
-    },
-    {
-      type: "string",
-      name: "remarks",
-      title: "\u5907\u6CE8"
-    }
-  ],
-  indexes: [
-    {
-      fields: ["keyAccount"]
-    }
-  ]
+module.exports = __toCommonJS(EEStrategy_exports);
+var import_config = require("../scheduling/config");
+const EE_CONFIG = {
+  category: "EE",
+  setupTimeHours: 1,
+  jitBufferDays: 2,
+  // 目标在 dlvDate - 2 天完成
+  preferEarlyFinish: false,
+  // EE 订单相对独立，按成本最优选择方案
+  fallbackLines: ["3F3", "3F4", "3F5", "3F6"],
+  lineSelectWeights: {
+    capacity: 0.3,
+    setupAffinity: 0.5,
+    loadBalance: 0.2
+  },
+  maxHeadcountFactor: 4
+  // 最多尝试 4 倍基准人数（+1人/次递增）
+};
+class EEStrategy {
+  name = "EE";
+  getConfig() {
+    return { ...EE_CONFIG };
+  }
+  filterOrders(orders) {
+    return orders.filter(
+      (o) => o.osmCategory === "EE" && import_config.SCHEDULABLE_POOLS.includes(o.prodPoolId)
+    );
+  }
+  getFallbackLines() {
+    return [...EE_CONFIG.fallbackLines];
+  }
+  getActiveStages() {
+    return [];
+  }
+}
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  EEStrategy
 });

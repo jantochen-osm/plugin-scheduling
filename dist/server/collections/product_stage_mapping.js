@@ -68,7 +68,6 @@ var product_stage_mapping_default = (0, import_database.defineCollection)({
   ],
   indexes: [
     {
-      type: "B-tree",
       fields: ["productCode", "stageName"]
     }
   ]
