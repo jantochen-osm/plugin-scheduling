@@ -3,7 +3,8 @@ import {
   Table, Tag, Typography, Space, message, Button, Radio, Popover, Descriptions,
   Drawer, Form, Select, DatePicker, InputNumber, Input, Alert, Divider, Tooltip,
 } from 'antd';
-import * as dayjs from 'dayjs'
+import * as _dayjs from 'dayjs';
+const dayjs: any = _dayjs;
 
 const { Text, Title } = Typography;
 
@@ -340,6 +341,8 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     setDrawerRecord(null);
   }, []);
 
+  // handleRemove 定义在 fetchScheduleData 之后（依赖它）
+
   const fetchScheduleData = useCallback(async () => {
     setLoading(true);
     try {
@@ -425,7 +428,18 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     }
   }, [api]);
 
+  // 初始加载
   useEffect(() => { fetchScheduleData(); }, []);
+
+  // 监听排产完成事件，自动刷新（与 SchedulingOrderSelector 通信）
+  useEffect(() => {
+    const handler = () => {
+      message.info('检测到新排产结果，正在刷新甘特图…');
+      fetchScheduleData();
+    };
+    window.addEventListener('scheduling:refresh', handler);
+    return () => window.removeEventListener('scheduling:refresh', handler);
+  }, [fetchScheduleData]);
 
   // ── 表格数据 ──
   const tableData = useMemo(() => {

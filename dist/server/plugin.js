@@ -34,6 +34,10 @@ var import_server = require("@nocobase/server");
 var import_runScheduling = require("./actions/runScheduling");
 var import_validateSchedule = require("./actions/validateSchedule");
 var import_adjustResult = require("./actions/adjustResult");
+var import_previewOrders = require("./actions/previewOrders");
+var import_lastRun = require("./actions/lastRun");
+var import_listRuns = require("./actions/listRuns");
+var import_removeResults = require("./actions/removeResults");
 class PluginSchedulingServer extends import_server.Plugin {
   async beforeLoad() {
   }
@@ -75,14 +79,23 @@ class PluginSchedulingServer extends import_server.Plugin {
       actions: {
         run: import_runScheduling.runScheduling,
         validate: import_validateSchedule.validateSchedule,
-        adjustResult: import_adjustResult.adjustResult
+        adjustResult: import_adjustResult.adjustResult,
         // 人工调整排产结果
+        previewOrders: import_previewOrders.previewOrders,
+        // 订单选择预览（无副作用）
+        lastRun: import_lastRun.lastRun,
+        // 最近一次运行摘要（raw SQL，绕过 ORM 字段校验）
+        listRuns: import_listRuns.listRuns,
+        // 排产历史列表（分页，raw SQL）
+        removeResults: import_removeResults.removeResults
+        // 撤销指定订单的排产结果
       }
     });
-    this.app.acl.allow("scheduling", ["run", "validate", "adjustResult"], "loggedIn");
+    this.app.acl.allow("scheduling", ["run", "validate", "adjustResult", "previewOrders", "lastRun", "listRuns", "removeResults"], "loggedIn");
     this.app.acl.allow("schedule_runs", ["list", "get"], "loggedIn");
     this.app.acl.allow("schedule_results_v2", ["list", "get", "update"], "loggedIn");
     this.app.acl.allow("schedule_exceptions_v2", ["list", "get"], "loggedIn");
+    this.app.acl.allow("dn_production_order_ds", ["list", "get"], "loggedIn");
   }
 }
 var plugin_default = PluginSchedulingServer;

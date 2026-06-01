@@ -11,7 +11,11 @@
 import type { Context } from '@nocobase/actions';
 import { RuleEngine, CapacityPool } from '../../engines';
 import type { SchedulingStrategy } from '../strategies';
-export declare function step1_fetchOrders(ctx: Context): Promise<{
+/**
+ * 从 dn_production_order_ds 拉取订单。
+ * @param prodIds  指定订单 ID 列表（prodid 字段）；不传或空数组 = 全量
+ */
+export declare function step1_fetchOrders(ctx: Context, prodIds?: string[]): Promise<{
     prodId: any;
     itemId: any;
     qtySched: number;
@@ -22,12 +26,15 @@ export declare function step1_fetchOrders(ctx: Context): Promise<{
     keyAccount: any;
 }[]>;
 /**
- * 过滤规则（任一触发 → 进入 exceptions，不排产）：
- *   - dlvDate 为空
- *   - dlvDate < today（已逾期）
- *   - qtySched ≤ 0
- *   - ESG 订单缺少 keyAccount
- *   - dn_operrouteline 无该产品路线
+ * 校验规则（BLOCKER → 进入 exceptions，不排产）：
+ *   - dlvDate 为空                              → MISSING_DLV_DATE  BLOCKER
+ *   - qtySched ≤ 0                             → INVALID_QTY       BLOCKER
+ *   - ESG 订单缺少 keyAccount                  → MISSING_KEY_ACCT  BLOCKER
+ *   - dn_operrouteline 无该产品路线            → NO_ROUTE          BLOCKER
+ *
+ * WARNING（记录但仍参与排产）：
+ *   - dlvDate < today（逾期）                  → PAST_DLV_DATE     WARNING
+ *     逾期订单在 step3 中获得最高优先级（overdueDays 降序第 1 排序键）
  *
  * 通过校验的订单附加 `_stages: [{ stageName: 'Assembly', stageSequence: 1 }]`
  */

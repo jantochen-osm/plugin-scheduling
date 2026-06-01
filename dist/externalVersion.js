@@ -14,6 +14,8 @@ module.exports = {
   "react": "18.2.0",
   "@nocobase/server": "2.1.0-beta.32",
   "@nocobase/flow-engine": "2.1.0-beta.32",
+  "dayjs": "1.11.13",
+  "react-router-dom": "6.30.1",
   "@nocobase/actions": "2.1.0-beta.32",
   "@nocobase/database": "2.1.0-beta.32"
 };

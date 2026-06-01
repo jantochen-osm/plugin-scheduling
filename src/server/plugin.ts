@@ -2,6 +2,10 @@ import { Plugin } from '@nocobase/server';
 import { runScheduling } from './actions/runScheduling';
 import { validateSchedule } from './actions/validateSchedule';
 import { adjustResult } from './actions/adjustResult';
+import { previewOrders } from './actions/previewOrders';
+import { lastRun } from './actions/lastRun';
+import { listRuns } from './actions/listRuns';
+import { removeResults } from './actions/removeResults';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -58,17 +62,23 @@ export class PluginSchedulingServer extends Plugin {
     this.app.resourceManager.define({
       name: 'scheduling',
       actions: {
-        run: runScheduling,
-        validate: validateSchedule,
-        adjustResult,  // 人工调整排产结果
+        run:           runScheduling,
+        validate:      validateSchedule,
+        adjustResult,        // 人工调整排产结果
+        previewOrders,       // 订单选择预览（无副作用）
+        lastRun,             // 最近一次运行摘要（raw SQL，绕过 ORM 字段校验）
+        listRuns,            // 排产历史列表（分页，raw SQL）
+        removeResults,       // 撤销指定订单的排产结果
       },
     });
 
-    // 开放权限（loggedIn 即可；角色细化由 NocoBase 管理界面配置）
-    this.app.acl.allow('scheduling', ['run', 'validate', 'adjustResult'], 'loggedIn');
+    // 开放权限
+    this.app.acl.allow('scheduling', ['run', 'validate', 'adjustResult', 'previewOrders', 'lastRun', 'listRuns', 'removeResults'], 'loggedIn');
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');
     this.app.acl.allow('schedule_results_v2', ['list', 'get', 'update'], 'loggedIn');
     this.app.acl.allow('schedule_exceptions_v2', ['list', 'get'], 'loggedIn');
+    // 订单选择 UI 需要读取订单列表
+    this.app.acl.allow('dn_production_order_ds', ['list', 'get'], 'loggedIn');
   }
 }
 

@@ -8,11 +8,8 @@
  *   POST /api/scheduling:run?strategy=EE   ← 仅 EE
  *   POST /api/scheduling:run?strategy=ESG  ← 仅 ESG
  *
- * 本文件只负责：
- *   1. 解析策略参数，构建 strategy 列表
- *   2. 调用 pipeline（step1~step5 + scheduleAll）
- *   3. 将结果写入数据库（schedule_results_v2 / schedule_exceptions_v2 / schedule_runs）
- *   4. 返回 HTTP 响应
+ * 模式：全量覆盖——每次执行删除全部旧结果，写入完整新快照。
+ * 每次运行都与一个唯一 runId 绑定，为将来版本历史功能预留扩展点。
  *
  * 核心排产逻辑见 ./scheduling/ 子模块。
  */

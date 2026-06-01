@@ -35,9 +35,10 @@ __export(pipelineSteps_exports, {
 module.exports = __toCommonJS(pipelineSteps_exports);
 var import_engines = require("../../engines");
 var import_config = require("./config");
-async function step1_fetchOrders(ctx) {
+async function step1_fetchOrders(ctx, prodIds) {
   const repo = ctx.db.getRepository("dn_production_order_ds");
-  const rows = await repo.find({ paginate: false });
+  const filter = prodIds && prodIds.length > 0 ? { prodid: { $in: prodIds } } : {};
+  const rows = await repo.find({ paginate: false, filter });
   return rows.map((r) => ({
     prodId: r.prodid,
     itemId: r.itemid,
@@ -60,10 +61,6 @@ async function step2_validateAndEnrich(orders, ctx) {
       exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "MISSING_DLV_DATE", severity: "BLOCKER", message: "DlvDate is empty" });
       continue;
     }
-    if (new Date(mo.dlvDate) < today) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "PAST_DLV_DATE", severity: "BLOCKER", message: `DlvDate=${mo.dlvDate} past due` });
-      continue;
-    }
     if (mo.qtySched <= 0) {
       exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "INVALID_QTY", severity: "BLOCKER", message: `QtySched=${mo.qtySched}` });
       continue;
@@ -77,6 +74,15 @@ async function step2_validateAndEnrich(orders, ctx) {
     if (!hasRoute) {
       exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "NO_ROUTE", severity: "BLOCKER", message: `No route for ${mo.itemId}` });
       continue;
+    }
+    if (new Date(mo.dlvDate) < today) {
+      exceptions.push({
+        prodId: mo.prodId,
+        itemId: mo.itemId,
+        exceptionType: "PAST_DLV_DATE",
+        severity: "WARNING",
+        message: `DlvDate=${mo.dlvDate} past due, scheduled with highest priority`
+      });
     }
     valid.push({ ...mo, _stages: [{ stageName: "Assembly", stageSequence: 1 }] });
   }

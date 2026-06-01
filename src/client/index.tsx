@@ -17,6 +17,8 @@ import {
 } from '@ant-design/icons';
 import React, { useState } from 'react';
 import SchedulingGantt from './components/SchedulingGantt';
+import SchedulingOrderSelector from './components/SchedulingOrderSelector';
+import SchedulingRunHistory from './components/SchedulingRunHistory';
 
 // ============================================================
 // 排产面板子组件
@@ -257,6 +259,26 @@ class SchedulingGanttBlockModel extends BlockModel {
 }
 
 // ============================================================
+// Block: 订单选择与排产执行
+// ============================================================
+class SchedulingOrderSelectorBlockModel extends BlockModel {
+  renderComponent() {
+    const api = (this as any).context?.api;
+    return <SchedulingOrderSelector api={api} ganttPath="/admin/u65sor0yye8" />;
+  }
+}
+
+// ============================================================
+// Block: 排产历史
+// ============================================================
+class SchedulingRunHistoryBlockModel extends BlockModel {
+  renderComponent() {
+    const api = (this as any).context?.api;
+    return <SchedulingRunHistory api={api} />;
+  }
+}
+
+// ============================================================
 // Plugin 入口
 // ============================================================
 export class PluginSchedulingClient extends Plugin {
@@ -268,6 +290,8 @@ export class PluginSchedulingClient extends Plugin {
     this.flowEngine.registerModels({
       SchedulingBlockModel,
       SchedulingGanttBlockModel,
+      SchedulingOrderSelectorBlockModel,
+      SchedulingRunHistoryBlockModel,
       RunSchedulingActionModel,
     });
   }

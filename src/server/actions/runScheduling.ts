@@ -8,11 +8,8 @@
  *   POST /api/scheduling:run?strategy=EE   ← 仅 EE
  *   POST /api/scheduling:run?strategy=ESG  ← 仅 ESG
  *
- * 本文件只负责：
- *   1. 解析策略参数，构建 strategy 列表
- *   2. 调用 pipeline（step1~step5 + scheduleAll）
- *   3. 将结果写入数据库（schedule_results_v2 / schedule_exceptions_v2 / schedule_runs）
- *   4. 返回 HTTP 响应
+ * 模式：全量覆盖——每次执行删除全部旧结果，写入完整新快照。
+ * 每次运行都与一个唯一 runId 绑定，为将来版本历史功能预留扩展点。
  *
  * 核心排产逻辑见 ./scheduling/ 子模块。
  */
@@ -34,24 +31,60 @@ export async function runScheduling(ctx: Context) {
   const ruleEngine = new RuleEngine(ctx);
   const today = getTodayStr();
 
-  // ── 1. 解析策略参数 ──────────────────────────────────────────────
+  // ── 1. 解析参数 ────────────────────────────────────────────────────
+  const body = ctx.action?.params?.values ?? {};
+
   const strategyParam: string = (
-    ctx.action?.params?.values?.strategy || ctx.action?.params?.strategy || ''
+    body.strategy || ctx.action?.params?.strategy || ''
   ).toUpperCase();
 
+  // prodIds: 前端传入的选中订单列表；不传或空数组 = 全量排产
+  const prodIds: string[] | undefined =
+    Array.isArray(body.prodIds) && body.prodIds.length > 0
+      ? body.prodIds
+      : undefined;
+
+  const runMode = prodIds ? 'SELECTED' : 'FULL';
+
   const strategies: SchedulingStrategy[] = [];
-  if (!strategyParam || strategyParam === 'EE') strategies.push(new EEStrategy());
+  if (!strategyParam || strategyParam === 'EE')  strategies.push(new EEStrategy());
   if (!strategyParam || strategyParam === 'ESG') strategies.push(new ESGStrategy());
 
-  ctx.logger?.info?.(`[Init] Strategies: ${strategies.map((s) => s.name).join(', ')}`);
+  ctx.logger?.info?.(`[Init] Strategies: ${strategies.map((s) => s.name).join(', ')} | Mode: ${runMode}${prodIds ? ` (${prodIds.length} orders)` : ''}`);
 
-  // ── 2. 拉取全量订单（所有策略共用）────────────────────────────────
-  const allOrders = await step1_fetchOrders(ctx);
+  // ── 2. 拉取订单（按 prodIds 过滤或全量）──────────────────────────
+  const allOrders = await step1_fetchOrders(ctx, prodIds);
   ctx.logger?.info?.(`[Step 1] Loaded ${allOrders.length} orders`);
 
   const allResults: any[] = [];
   const allExc: any[] = [];
   const allLineUtil: any[] = [];
+
+  // ── 3a. 预检：找出不被任何策略覆盖的订单（如池子不在白名单），提前记录 WARNING ──
+  // 这类订单会被 strategy.filterOrders() 静默过滤，用户无法从结果中得知原因。
+  // 在此提前生成异常，让它们出现在排产历史和结果弹窗的异常明细里。
+  {
+    const handledIds = new Set<string>();
+    for (const strategy of strategies) {
+      for (const o of strategy.filterOrders(allOrders)) {
+        handledIds.add(o.prodId);
+      }
+    }
+    for (const o of allOrders) {
+      if (!handledIds.has(o.prodId)) {
+        allExc.push({
+          prodId:        o.prodId,
+          itemId:        o.itemId,
+          exceptionType: 'POOL_NOT_SCHEDULABLE',
+          severity:      'WARNING',
+          message:       `生产池「${o.prodPoolId || '-'}」不在当前排产范围（仅支持装配类订单池），订单已跳过`,
+        });
+      }
+    }
+    if (allExc.length > 0) {
+      ctx.logger?.info?.(`[Step pre] ${allExc.length} orders skipped (pool not schedulable)`);
+    }
+  }
 
   // ── 3. 逐策略执行排产 Pipeline ───────────────────────────────────
   for (const strategy of strategies) {  
@@ -105,18 +138,18 @@ export async function runScheduling(ctx: Context) {
   const runId = `RUN_${Date.now()}`;
   const resultRepo = ctx.db.getRepository('schedule_results_v2');
   const excRepo = ctx.db.getRepository('schedule_exceptions_v2');
-  const runRepo = ctx.db.getRepository('schedule_runs');
 
-  // 清空旧数据
+  // 全量清空旧数据（全量覆盖模式）
   try {
     const oldResults = await resultRepo.find({ fields: ['id'], paginate: false });
     if (oldResults.length > 0) await resultRepo.destroy({ filterByTk: oldResults.map((r: any) => r.id) });
-    ctx.logger?.info?.('[DB] Cleared old results');
+    ctx.logger?.info?.('[DB] Full mode: cleared all schedule_results_v2');
   } catch (e: any) {
     ctx.logger?.error?.('[DB][ERROR] Clear results_v2: ' + (e?.original?.message || e?.message || e));
     throw e;
   }
   try {
+    // 异常表：同样按模式清空（全量清空以保持异常列表与当次排产一致）
     const oldExcs = await excRepo.find({ fields: ['id'], paginate: false });
     if (oldExcs.length > 0) await excRepo.destroy({ filterByTk: oldExcs.map((r: any) => r.id) });
     ctx.logger?.info?.('[DB] Cleared old exceptions');
@@ -126,18 +159,33 @@ export async function runScheduling(ctx: Context) {
   }
 
   // 写入本次运行记录 —— 用 raw SQL 绕过 ORM 字段校验
-  const exceptionBreakdown: Record<string, number> = {};
+  // runId 与结果表绑定，为将来版本历史功能预留扩展点
+  // 构建异常摘要：summary（各类型计数）+ details（逐条明细，含 prodId/原因）
+  const excSummary: Record<string, number> = {};
   for (const e of allExc) {
     const t = e.exceptionType || 'UNKNOWN';
-    exceptionBreakdown[t] = (exceptionBreakdown[t] || 0) + 1;
+    excSummary[t] = (excSummary[t] || 0) + 1;
   }
+  const exceptionBreakdown = {
+    summary: excSummary,
+    details: allExc.map((e: any) => ({
+      prodId:        e.prodId        || '',
+      itemId:        e.itemId        || '',
+      exceptionType: e.exceptionType || 'UNKNOWN',
+      severity:      e.severity      || 'WARNING',
+      message:       e.message       || '',
+    })),
+  };
   const runStatus = allExc.filter((e: any) => e.severity === 'BLOCKER').length === 0 ? 'SUCCESS' : 'PARTIAL';
   const validCount = strategies.reduce((sum, s) => sum + s.filterOrders(allOrders).length, 0);
   try {
     await ctx.db.sequelize.query(
       `INSERT INTO schedule_runs
-        ("runId", "runTime", status, "totalOrders", "validOrders", "scheduledCount", "exceptionCount", "successRate", "lineUtilization", "exceptionBreakdown")
-       VALUES (:runId, NOW(), :status, :totalOrders, :validOrders, :scheduledCount, :exceptionCount, :successRate, :lineUtilization::json, :exceptionBreakdown::json)`,
+        ("runId", "runTime", status, "totalOrders", "validOrders", "scheduledCount", "exceptionCount",
+         "successRate", "lineUtilization", "exceptionBreakdown", "selectedProdIds", "runMode")
+       VALUES (:runId, NOW(), :status, :totalOrders, :validOrders, :scheduledCount, :exceptionCount,
+               :successRate, :lineUtilization::json, :exceptionBreakdown::json,
+               :selectedProdIds::json, :runMode)`,
       {
         replacements: {
           runId,
@@ -149,10 +197,12 @@ export async function runScheduling(ctx: Context) {
           successRate: allResults.length > 0 ? 100 : 0,
           lineUtilization: JSON.stringify(allLineUtil),
           exceptionBreakdown: JSON.stringify(exceptionBreakdown),
+          selectedProdIds: prodIds ? JSON.stringify(prodIds) : null,
+          runMode,
         },
       },
     );
-    ctx.logger?.info?.('[DB] Inserted schedule_runs record via raw SQL');
+    ctx.logger?.info?.('[DB] Inserted schedule_runs record');
   } catch (e: any) {
     ctx.logger?.error?.('[DB][ERROR] Insert schedule_runs: ' + (e?.original?.message || e?.message || String(e)));
     throw e;
