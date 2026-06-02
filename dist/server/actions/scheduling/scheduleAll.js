@@ -135,7 +135,8 @@ function commitBestResult(mo, bestResult, allowedLines, stageName, routeUph, eff
   }
   return committed;
 }
-async function scheduleAll(sortedOrders, ruleEngine, lineCodes, capacityPool, ctx, strategy) {
+async function scheduleAll(sortedOrders, ruleEngine, lineCodes, capacityPool, ctx, strategy, decisionMap) {
+  var _a;
   const results = [];
   const exceptions = [];
   const sdm = new import_engines.StageDependencyManager();
@@ -164,6 +165,17 @@ async function scheduleAll(sortedOrders, ruleEngine, lineCodes, capacityPool, ct
   }
   const weights = cfg.lineSelectWeights;
   for (const mo of sortedOrders) {
+    const dec = decisionMap == null ? void 0 : decisionMap.get(mo.prodId);
+    if (dec == null ? void 0 : dec.skip) {
+      exceptions.push({
+        prodId: mo.prodId,
+        itemId: mo.itemId,
+        exceptionType: "LLM_SKIP",
+        severity: "WARNING",
+        message: dec.skipReason || "LLM \u6D7B\u5224\u5B9A\u8BE5\u8BA2\u5355\u4E0D\u9002\u5408\u672C\u6B21\u6392\u4EA7\uFF0C\u5DF2\u8DF3\u8FC7"
+      });
+      continue;
+    }
     let productStages = mo._stages || [];
     if (productStages.length === 0) {
       exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "NO_STAGE_MAPPING", severity: "BLOCKER", message: "No stage mapping" });
@@ -216,7 +228,7 @@ async function scheduleAll(sortedOrders, ruleEngine, lineCodes, capacityPool, ct
       const earliestStart = prevCompletion ? (0, import_config.addDays)(prevCompletion, 1) : today;
       const bufferDlv = (0, import_config.addDays)(dlvStr, -cfg.jitBufferDays);
       const targetDlv = bufferDlv >= today ? bufferDlv : dlvStr;
-      const rankedLines = rankCandidateLines(
+      let rankedLines = rankCandidateLines(
         allowedLines,
         lineCodes,
         lineLoad,
@@ -228,6 +240,11 @@ async function scheduleAll(sortedOrders, ruleEngine, lineCodes, capacityPool, ct
         targetDlv,
         weights
       );
+      if ((_a = dec == null ? void 0 : dec.preferredLines) == null ? void 0 : _a.length) {
+        const preferred = dec.preferredLines.filter((l) => rankedLines.includes(l));
+        const rest = rankedLines.filter((l) => !preferred.includes(l));
+        rankedLines = [...preferred, ...rest];
+      }
       if (rankedLines.length === 0) {
         exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: "NO_AVAILABLE_LINE", severity: "BLOCKER", message: `Stage ${stageName}: no available line` });
         continue;

@@ -21,7 +21,10 @@
 import type { Context } from '@nocobase/actions';
 import { RuleEngine, CapacityPool } from '../../engines';
 import type { SchedulingStrategy } from '../strategies';
-export declare function scheduleAll(sortedOrders: any[], ruleEngine: RuleEngine, lineCodes: string[], capacityPool: CapacityPool, ctx: Context, strategy: SchedulingStrategy): Promise<{
+import type { SchedulingDecision } from '../llmDecision';
+export declare function scheduleAll(sortedOrders: any[], ruleEngine: RuleEngine, lineCodes: string[], capacityPool: CapacityPool, ctx: Context, strategy: SchedulingStrategy, 
+/** LLM 决策图表（prodId → decision），缺省 undefined 走原算法 */
+decisionMap?: Map<string, SchedulingDecision>): Promise<{
     results: any[];
     exceptions: any[];
     lineUtilization: {

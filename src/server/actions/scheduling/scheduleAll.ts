@@ -25,6 +25,7 @@ import type { SchedulingStrategy } from '../strategies';
 import { addDays, formatDate, getTodayStr, SCHEDULING_CONFIG } from './config';
 import { calcLatestStart } from './calcLatestStart';
 import { getCombinations, tryScheduleStage } from './tryScheduleStage';
+import type { SchedulingDecision } from '../llmDecision';
 
 /** 前序订单提交历史，用于产能回溯与人手翻倍 */
 type LineHistEntry = {
@@ -221,6 +222,8 @@ export async function scheduleAll(
   capacityPool: CapacityPool,
   ctx: Context,
   strategy: SchedulingStrategy,
+  /** LLM 决策图表（prodId → decision），缺省 undefined 走原算法 */
+  decisionMap?: Map<string, SchedulingDecision>,
 ) {
   const results: any[] = [];
   const exceptions: any[] = [];
@@ -253,6 +256,19 @@ export async function scheduleAll(
   const weights = cfg.lineSelectWeights;
 
   for (const mo of sortedOrders) {
+    // ── LLM skip 判断 ──────────────────────────────────────────
+    const dec = decisionMap?.get(mo.prodId);
+    if (dec?.skip) {
+      exceptions.push({
+        prodId:        mo.prodId,
+        itemId:        mo.itemId,
+        exceptionType: 'LLM_SKIP',
+        severity:      'WARNING',
+        message:       dec.skipReason || 'LLM 浻判定该订单不适合本次排产，已跳过',
+      });
+      continue;
+    }
+
     // ── 获取有效工段 ──
     let productStages: any[] = mo._stages || [];
     if (productStages.length === 0) {
@@ -324,10 +340,17 @@ export async function scheduleAll(
       const targetDlv = bufferDlv >= today ? bufferDlv : dlvStr;
 
       // ── 产线评分 ──
-      const rankedLines = rankCandidateLines(
+      let rankedLines = rankCandidateLines(
         allowedLines, lineCodes, lineLoad, lineLastItem,
         capacityPool, mo, uph, earliestStart, targetDlv, weights,
       );
+
+      // LLM 引导：将 preferredLines 排在前面（其余保持评分顺序追加）
+      if (dec?.preferredLines?.length) {
+        const preferred = dec.preferredLines.filter((l) => rankedLines.includes(l));
+        const rest = rankedLines.filter((l) => !preferred.includes(l));
+        rankedLines = [...preferred, ...rest];
+      }
 
       if (rankedLines.length === 0) {
         exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'NO_AVAILABLE_LINE', severity: 'BLOCKER', message: `Stage ${stageName}: no available line` });

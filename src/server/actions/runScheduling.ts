@@ -26,6 +26,8 @@ import {
   step5_initCapacityPool,
   scheduleAll,
 } from './scheduling';
+import { fetchLlmDecisions, applyLlmOrdering } from './llmDecision';
+import type { SchedulingDecision } from './llmDecision';
 
 export async function runScheduling(ctx: Context) {
   const ruleEngine = new RuleEngine(ctx);
@@ -113,11 +115,45 @@ export async function runScheduling(ctx: Context) {
     // Step 5: 初始化产能池
     const capacityPool = await step5_initCapacityPool(ctx, ruleEngine, lineCodes);
 
+    // ── LLM 决策（可选）────────────────────────────────────────────────
+    // 成功时：引导产线偏好 + 重排优先级；失败时：静默 fallback 到原算法
+    let decisionMap: Map<string, SchedulingDecision> | undefined;
+    const llmApiKey = process.env.OPENAI_API_KEY || '';
+    console.log(llmApiKey, '---'); // 打印部分 key 以验证加载，但避免泄露完整值 
+    const llmModel  = process.env.SCHEDULING_LLM_MODEL || 'gpt-4o-mini';
+
+    if (llmApiKey) {
+      // 构建产线映射摘要（客户 → 允许产线），供 LLM 参考
+      const lineMapping: Record<string, string[]> = {};
+      for (const o of sortedOrders) {
+        const account = o.keyAccount || '';
+        if (account && !lineMapping[account]) {
+          const result = await ruleEngine.getCustomerLines(account);
+          lineMapping[account] = result?.assignedLines || [];
+        }
+      }
+
+      const rawDecisions = await fetchLlmDecisions(
+        sortedOrders, lineMapping, today, llmApiKey, llmModel, ctx.logger,
+      );
+      console.log(rawDecisions, '--------------------------------------- LLM Decisions'); // 打印原始决策以供调试验证
+      if (rawDecisions) {
+        // 用 LLM 优先级重新排序订单
+        sortedOrders = applyLlmOrdering(sortedOrders, rawDecisions);
+        // 构建 Map 供 scheduleAll 逐条查用
+        decisionMap = new Map(rawDecisions.map((d) => [d.prodId, d]));
+        ctx.logger?.info?.(`[LLM] Mode: LLM_ASSISTED (${rawDecisions.length} decisions)`);
+      } else {
+        ctx.logger?.info?.('[LLM] Mode: ALGORITHM_ONLY (LLM returned null, using fallback)');
+      }
+    }
+
     // 核心排产
     const { results, exceptions: schedEx, lineUtilization } = await scheduleAll(
-      sortedOrders, ruleEngine, lineCodes, capacityPool, ctx, strategy,
+      sortedOrders, ruleEngine, lineCodes, capacityPool, ctx, strategy, decisionMap,
     );
-
+    console.log(decisionMap,sortedOrders,'--------------------------------------- LLM Decision Map');
+    console.log(results, schedEx, '--- Schedule All results and exceptions'); // 打印排产结果和异常以供调试验证
     allResults.push(...results);
     allExc.push(...schedEx);
     allLineUtil.push(...lineUtilization);
@@ -209,6 +245,7 @@ export async function runScheduling(ctx: Context) {
   }
 
   // 写入排产结果 —— 用 raw SQL 确保字段与 DB 列严格对齐
+  // console.info(allResults, allExc, '--- Total results and exceptions to insert----------------'); // 打印待插入记录数以供调试验证  
   if (allResults.length > 0) {
     try {
       // 构建批量 INSERT values

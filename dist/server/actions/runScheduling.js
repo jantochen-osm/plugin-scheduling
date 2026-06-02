@@ -32,8 +32,9 @@ module.exports = __toCommonJS(runScheduling_exports);
 var import_engines = require("../engines");
 var import_strategies = require("./strategies");
 var import_scheduling = require("./scheduling");
+var import_llmDecision = require("./llmDecision");
 async function runScheduling(ctx) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y;
   const ruleEngine = new import_engines.RuleEngine(ctx);
   const today = (0, import_scheduling.getTodayStr)();
   const body = ((_b = (_a = ctx.action) == null ? void 0 : _a.params) == null ? void 0 : _b.values) ?? {};
@@ -86,18 +87,46 @@ async function runScheduling(ctx) {
     const lineCodes = await (0, import_scheduling.step4_collectLines)(sortedOrders, ruleEngine, strategy);
     (_r = (_q = ctx.logger) == null ? void 0 : _q.info) == null ? void 0 : _r.call(_q, `  Lines: ${lineCodes.join(", ")}`);
     const capacityPool = await (0, import_scheduling.step5_initCapacityPool)(ctx, ruleEngine, lineCodes);
+    let decisionMap;
+    const llmApiKey = process.env.OPENAI_API_KEY || "";
+    const llmModel = process.env.SCHEDULING_LLM_MODEL || "gpt-4o-mini";
+    if (llmApiKey) {
+      const lineMapping = {};
+      for (const o of sortedOrders) {
+        const account = o.keyAccount || "";
+        if (account && !lineMapping[account]) {
+          lineMapping[account] = await ruleEngine.getCustomerLines(account) || [];
+        }
+      }
+      const rawDecisions = await (0, import_llmDecision.fetchLlmDecisions)(
+        sortedOrders,
+        lineMapping,
+        today,
+        llmApiKey,
+        llmModel,
+        ctx.logger
+      );
+      if (rawDecisions) {
+        sortedOrders = (0, import_llmDecision.applyLlmOrdering)(sortedOrders, rawDecisions);
+        decisionMap = new Map(rawDecisions.map((d) => [d.prodId, d]));
+        (_t = (_s = ctx.logger) == null ? void 0 : _s.info) == null ? void 0 : _t.call(_s, `[LLM] Mode: LLM_ASSISTED (${rawDecisions.length} decisions)`);
+      } else {
+        (_v = (_u = ctx.logger) == null ? void 0 : _u.info) == null ? void 0 : _v.call(_u, "[LLM] Mode: ALGORITHM_ONLY (LLM returned null, using fallback)");
+      }
+    }
     const { results, exceptions: schedEx, lineUtilization } = await (0, import_scheduling.scheduleAll)(
       sortedOrders,
       ruleEngine,
       lineCodes,
       capacityPool,
       ctx,
-      strategy
+      strategy,
+      decisionMap
     );
     allResults.push(...results);
     allExc.push(...schedEx);
     allLineUtil.push(...lineUtilization);
-    (_t = (_s = ctx.logger) == null ? void 0 : _s.info) == null ? void 0 : _t.call(_s, `  Results: ${results.length}, Exceptions: ${schedEx.length}`);
+    (_x = (_w = ctx.logger) == null ? void 0 : _w.info) == null ? void 0 : _x.call(_w, `  Results: ${results.length}, Exceptions: ${schedEx.length}`);
   }
   let globalStartDate = "";
   let globalEndDate = "";
@@ -113,17 +142,17 @@ async function runScheduling(ctx) {
   try {
     const oldResults = await resultRepo.find({ fields: ["id"], paginate: false });
     if (oldResults.length > 0) await resultRepo.destroy({ filterByTk: oldResults.map((r) => r.id) });
-    (_v = (_u = ctx.logger) == null ? void 0 : _u.info) == null ? void 0 : _v.call(_u, "[DB] Full mode: cleared all schedule_results_v2");
+    (_z = (_y = ctx.logger) == null ? void 0 : _y.info) == null ? void 0 : _z.call(_y, "[DB] Full mode: cleared all schedule_results_v2");
   } catch (e) {
-    (_y = (_w = ctx.logger) == null ? void 0 : _w.error) == null ? void 0 : _y.call(_w, "[DB][ERROR] Clear results_v2: " + (((_x = e == null ? void 0 : e.original) == null ? void 0 : _x.message) || (e == null ? void 0 : e.message) || e));
+    (_C = (_A = ctx.logger) == null ? void 0 : _A.error) == null ? void 0 : _C.call(_A, "[DB][ERROR] Clear results_v2: " + (((_B = e == null ? void 0 : e.original) == null ? void 0 : _B.message) || (e == null ? void 0 : e.message) || e));
     throw e;
   }
   try {
     const oldExcs = await excRepo.find({ fields: ["id"], paginate: false });
     if (oldExcs.length > 0) await excRepo.destroy({ filterByTk: oldExcs.map((r) => r.id) });
-    (_A = (_z = ctx.logger) == null ? void 0 : _z.info) == null ? void 0 : _A.call(_z, "[DB] Cleared old exceptions");
+    (_E = (_D = ctx.logger) == null ? void 0 : _D.info) == null ? void 0 : _E.call(_D, "[DB] Cleared old exceptions");
   } catch (e) {
-    (_D = (_B = ctx.logger) == null ? void 0 : _B.error) == null ? void 0 : _D.call(_B, "[DB][ERROR] Clear exceptions_v2: " + (((_C = e == null ? void 0 : e.original) == null ? void 0 : _C.message) || (e == null ? void 0 : e.message) || e));
+    (_H = (_F = ctx.logger) == null ? void 0 : _F.error) == null ? void 0 : _H.call(_F, "[DB][ERROR] Clear exceptions_v2: " + (((_G = e == null ? void 0 : e.original) == null ? void 0 : _G.message) || (e == null ? void 0 : e.message) || e));
     throw e;
   }
   const excSummary = {};
@@ -167,9 +196,9 @@ async function runScheduling(ctx) {
         }
       }
     );
-    (_F = (_E = ctx.logger) == null ? void 0 : _E.info) == null ? void 0 : _F.call(_E, "[DB] Inserted schedule_runs record");
+    (_J = (_I = ctx.logger) == null ? void 0 : _I.info) == null ? void 0 : _J.call(_I, "[DB] Inserted schedule_runs record");
   } catch (e) {
-    (_I = (_G = ctx.logger) == null ? void 0 : _G.error) == null ? void 0 : _I.call(_G, "[DB][ERROR] Insert schedule_runs: " + (((_H = e == null ? void 0 : e.original) == null ? void 0 : _H.message) || (e == null ? void 0 : e.message) || String(e)));
+    (_M = (_K = ctx.logger) == null ? void 0 : _K.error) == null ? void 0 : _M.call(_K, "[DB][ERROR] Insert schedule_runs: " + (((_L = e == null ? void 0 : e.original) == null ? void 0 : _L.message) || (e == null ? void 0 : e.message) || String(e)));
     throw e;
   }
   if (allResults.length > 0) {
@@ -208,22 +237,22 @@ async function runScheduling(ctx) {
           { replacements: row }
         );
       }
-      (_K = (_J = ctx.logger) == null ? void 0 : _J.info) == null ? void 0 : _K.call(_J, "[DB] Inserted " + allResults.length + " results via raw SQL");
+      (_O = (_N = ctx.logger) == null ? void 0 : _N.info) == null ? void 0 : _O.call(_N, "[DB] Inserted " + allResults.length + " results via raw SQL");
     } catch (e) {
-      (_N = (_L = ctx.logger) == null ? void 0 : _L.error) == null ? void 0 : _N.call(_L, "[DB][ERROR] Insert schedule_results_v2: " + (((_M = e == null ? void 0 : e.original) == null ? void 0 : _M.message) || (e == null ? void 0 : e.message) || String(e)));
+      (_R = (_P = ctx.logger) == null ? void 0 : _P.error) == null ? void 0 : _R.call(_P, "[DB][ERROR] Insert schedule_results_v2: " + (((_Q = e == null ? void 0 : e.original) == null ? void 0 : _Q.message) || (e == null ? void 0 : e.message) || String(e)));
       throw e;
     }
   }
   if (allExc.length > 0) {
     try {
       await excRepo.create({ values: allExc.map((e) => ({ ...e, runId })) });
-      (_P = (_O = ctx.logger) == null ? void 0 : _O.info) == null ? void 0 : _P.call(_O, "[DB] Inserted " + allExc.length + " exceptions");
+      (_T = (_S = ctx.logger) == null ? void 0 : _S.info) == null ? void 0 : _T.call(_S, "[DB] Inserted " + allExc.length + " exceptions");
     } catch (e) {
-      (_S = (_Q = ctx.logger) == null ? void 0 : _Q.error) == null ? void 0 : _S.call(_Q, "[DB][ERROR] Insert exceptions_v2: " + (((_R = e == null ? void 0 : e.original) == null ? void 0 : _R.message) || (e == null ? void 0 : e.message) || String(e)));
+      (_W = (_U = ctx.logger) == null ? void 0 : _U.error) == null ? void 0 : _W.call(_U, "[DB][ERROR] Insert exceptions_v2: " + (((_V = e == null ? void 0 : e.original) == null ? void 0 : _V.message) || (e == null ? void 0 : e.message) || String(e)));
       throw e;
     }
   }
-  (_U = (_T = ctx.logger) == null ? void 0 : _T.info) == null ? void 0 : _U.call(_T, `[Done] ${allResults.length} results, ${allExc.length} exceptions`);
+  (_Y = (_X = ctx.logger) == null ? void 0 : _X.info) == null ? void 0 : _Y.call(_X, `[Done] ${allResults.length} results, ${allExc.length} exceptions`);
   ctx.body = {
     runId,
     strategies: strategies.map((s) => s.name),
