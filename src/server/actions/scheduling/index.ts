@@ -9,4 +9,4 @@ export { MOCK_TODAY, SCHEDULING_CONFIG, formatDate, addDays, getToday, getTodayS
 export { step1_fetchOrders, step2_validateAndEnrich, step3_sort, step4_collectLines, step5_initCapacityPool } from './pipelineSteps';
 export { calcLatestStart } from './calcLatestStart';
 export { getCombinations, tryScheduleStage } from './tryScheduleStage';
-export { scheduleAll } from './scheduleAll';
+export { scheduleAll, preOccupyPinnedResults } from './scheduleAll';

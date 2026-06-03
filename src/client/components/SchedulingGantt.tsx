@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Table, Tag, Typography, Space, message, Button, Radio, Popover, Descriptions,
   Drawer, Form, Select, DatePicker, InputNumber, Input, Alert, Divider, Tooltip,
+  Switch, Popconfirm,
 } from 'antd';
 import * as _dayjs from 'dayjs';
 const dayjs: any = _dayjs;
@@ -107,6 +108,7 @@ const AdjustDrawer: React.FC<{
   const [newQtyInput, setNewQtyInput] = useState(0);
   const [showAddRow, setShowAddRow] = useState(false);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [autoReSchedule, setAutoReSchedule] = useState(false);
 
   useEffect(() => {
     if (open && record) {
@@ -124,6 +126,7 @@ const AdjustDrawer: React.FC<{
       setNewDateInput(null);
       setNewQtyInput(0);
       setShowAddRow(false);
+      setAutoReSchedule(false);
     }
   }, [open, record]);
 
@@ -146,16 +149,24 @@ const AdjustDrawer: React.FC<{
       finishDate: values.finishDate?.format('YYYY-MM-DD'),
       adjustReason: values.adjustReason,
       ...(Object.keys(changedPatch).length > 0 ? { dailyPlanPatch: changedPatch } : {}),
+      autoReSchedule,
     };
 
     setLoading(true);
     try {
-      await api.request({
+      const res = await api.request({
         url: 'scheduling:adjustResult',
         method: 'post',
         data: payload,
       });
-      message.success('✅ 调整已保存');
+      message.success(autoReSchedule ? '✅ 调整已保存，后台重算中…' : '✅ 调整已保存');
+      // 若服务端检测到历史日期，展示警告
+      const warnings: string[] = res?.data?.warnings || [];
+      if (warnings.length > 0) {
+        setTimeout(() => {
+          warnings.forEach((w) => message.warning(w, 8));
+        }, 500);
+      }
       onClose();
       onSaved();
     } catch (e: any) {
@@ -182,8 +193,52 @@ const AdjustDrawer: React.FC<{
       }
       width={480} open={open} onClose={onClose} destroyOnClose
       footer={
-        <div style={{ textAlign: 'right' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          {/* 左侧：解锁按钮（仅已锁定记录显示）*/}
+          <div>
+            {record?.isManualAdjusted && (
+              <Popconfirm
+                title={
+                  <div>
+                    <div style={{ fontWeight: 600 }}>确定解锁此记录？</div>
+                    <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+                      解锁后，点击"调整后重算"时此订单将被重新计算。
+                    </div>
+                  </div>
+                }
+                onConfirm={async () => {
+                  try {
+                    await api.request({
+                      url: 'scheduling:adjustResult',
+                      method: 'post',
+                      data: { id: record.id, unlock: true },
+                    });
+                    message.success('已解锁');
+                    onClose();
+                    onSaved();
+                  } catch (e: any) {
+                    message.error('解锁失败：' + (e?.message || ''));
+                  }
+                }}
+                okText="解锁"
+                cancelText="取消"
+              >
+                <Button danger size="small">解锁此记录</Button>
+              </Popconfirm>
+            )}
+          </div>
+          {/* 右侧：重算开关 + 取消 + 保存 */}
           <Space>
+            <Tooltip title="开启后，保存调整的同时自动重排其他未锁定订单">
+              <Space size={4}>
+                <Text type="secondary" style={{ fontSize: 12 }}>保存后重算</Text>
+                <Switch
+                  size="small"
+                  checked={autoReSchedule}
+                  onChange={setAutoReSchedule}
+                />
+              </Space>
+            </Tooltip>
             <Button onClick={onClose}>取消</Button>
             <Button type="primary" loading={loading} onClick={handleSave}>保存调整</Button>
           </Space>
@@ -309,7 +364,15 @@ const AdjustDrawer: React.FC<{
         <Form.Item name="adjustReason">
           <Input.TextArea rows={3} placeholder="请输入调整原因（选填）" maxLength={200} showCount />
         </Form.Item>
-        <Alert type="warning" showIcon message="注意：重新执行排产后，本次调整将被覆盖，无法恢复。" style={{ marginTop: 8 }} />
+        <Alert
+          type="warning" showIcon style={{ marginTop: 8 }}
+          message={
+            <span>
+              注意：本次调整将被<Text strong>锁定</Text>。点击"调整后重算"可在保留此锁定的前提下重排其余订单；
+              全量重排将覆盖所有调整。
+            </span>
+          }
+        />
       </Form>
     </Drawer>
   );
@@ -330,6 +393,17 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerRecord, setDrawerRecord] = useState<any>(null);
+
+  // ── 调整后重算 ──────────────────────────────────────────────────────────
+  const [reScheduling, setReScheduling] = useState(false);
+
+  /** 已锁定条数（直接从 rawRecords 计算，无需额外请求）*/
+  const adjustedCount = useMemo(
+    () => rawRecords.filter((r: any) => r.isManualAdjusted).length,
+    [rawRecords],
+  );
+
+
 
   const openDrawer = useCallback((record: any) => {
     setDrawerRecord(record);
@@ -427,6 +501,27 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
       setLoading(false);
     }
   }, [api]);
+
+    /** 调整后重算处理函数 */
+  const handleReSchedule = useCallback(async () => {
+    setReScheduling(true);
+    try {
+      const result = await api.request({
+        url: 'scheduling:reScheduleAfterAdjust',
+        method: 'post',
+        data: { strategy: 'ESG' },
+      });
+      const data = result?.data;
+      message.success(
+        `重算完成：保留锁定 ${data?.pinnedCount ?? 0} 单，重排 ${data?.reScheduledCount ?? 0} 单`,
+      );
+      fetchScheduleData();
+    } catch (e: any) {
+      message.error('重算失败：' + (e?.message || '未知错误'));
+    } finally {
+      setReScheduling(false);
+    }
+  }, [api, fetchScheduleData]);
 
   // 初始加载
   useEffect(() => { fetchScheduleData(); }, []);
@@ -640,7 +735,17 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
               {record.isOverdue && <Tag color="red" style={{ margin: 0, fontSize: '10px' }}>逾期</Tag>}
             </Space>
             {record.isManualAdjusted && (
-              <Tooltip title={record.adjustReason ? `调整备注：${record.adjustReason}` : '已人工调整'}>
+              <Tooltip
+                title={
+                  <div style={{ fontSize: 12 }}>
+                    {record.adjustReason && <div>备注：{record.adjustReason}</div>}
+                    {record.pinnedBy && <div>调整人：{record.pinnedBy}</div>}
+                    {record.adjustedAt && (
+                      <div>时间：{new Date(record.adjustedAt).toLocaleString('zh-CN')}</div>
+                    )}
+                  </div>
+                }
+              >
                 <Tag color="orange" style={{ fontSize: 10, padding: '0 4px', cursor: 'default' }}>✎ 已调整</Tag>
               </Tooltip>
             )}
@@ -692,13 +797,55 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
             <Radio.Button value="grouped">按产线树形排期</Radio.Button>
           </Radio.Group>
         </Space>
-        <Space>
+        <Space wrap>
           <Text type="secondary" style={{ fontSize: '12px' }}>
             共计 {rawRecords.length} 条单据 | 日期跨度: {dynamicDateColumns.length} 天
-            {rawRecords.filter((r: any) => r.isManualAdjusted).length > 0 && (
-              <> | <Tag color="orange" style={{ fontSize: 10 }}>✎ 已调整 {rawRecords.filter((r: any) => r.isManualAdjusted).length} 条</Tag></>
+            {adjustedCount > 0 && (
+              <> | <Tag color="orange" style={{ fontSize: 10 }}>✎ 已锁定 {adjustedCount} 条</Tag></>
             )}
           </Text>
+
+          {/* 调整后重算按钮（仅有锁定记录时显示）*/}
+          {adjustedCount > 0 && (
+            <Tooltip title={`将保留 ${adjustedCount} 条已锁定记录，对其余订单重新排产`}>
+              <Button
+                onClick={handleReSchedule}
+                loading={reScheduling}
+                style={{ borderColor: '#fa8c16', color: '#fa8c16' }}
+              >
+                调整后重算（{adjustedCount} 锁）
+              </Button>
+            </Tooltip>
+          )}
+
+          {/* 解锁全部并重排（Popconfirm 保护）*/}
+          {adjustedCount > 0 && (
+            <Popconfirm
+              title={
+                <div>
+                  <div style={{ fontWeight: 600 }}>解锁全部 {adjustedCount} 条锁定记录？</div>
+                  <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+                    此操作将清除所有手工调整，重新全量排产，不可撤销。
+                  </div>
+                </div>
+              }
+              onConfirm={async () => {
+                try {
+                  await api.request({ url: 'scheduling:run', method: 'post', data: { strategy: 'ESG', scope: 'current' } });
+                  message.success('已全量重排，所有手工调整已清除');
+                  fetchScheduleData();
+                } catch (e: any) {
+                  message.error('全量重排失败：' + (e?.message || ''));
+                }
+              }}
+              okText="确定解锁全量重排"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+            >
+              <Button danger size="small">解锁全部并重排</Button>
+            </Popconfirm>
+          )}
+
           <Button type="primary" onClick={fetchScheduleData} loading={loading}>刷新数据</Button>
         </Space>
       </div>

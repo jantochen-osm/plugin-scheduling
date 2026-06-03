@@ -40,13 +40,39 @@ export async function runScheduling(ctx: Context) {
     body.strategy || ctx.action?.params?.strategy || ''
   ).toUpperCase();
 
+  // scope: 'current' → 仅重排 schedule_results_v2 中已有记录的订单
+  // scope 不传（或其他值）→ 全量排产（从 ERP 源拉取所有订单）
+  const scopeCurrent: boolean = (body.scope || '').toLowerCase() === 'current';
+
   // prodIds: 前端传入的选中订单列表；不传或空数组 = 全量排产
-  const prodIds: string[] | undefined =
+  let prodIds: string[] | undefined =
     Array.isArray(body.prodIds) && body.prodIds.length > 0
       ? body.prodIds
       : undefined;
 
-  const runMode = prodIds ? 'SELECTED' : 'FULL';
+  // ── scope=current：从当前排产结果表获取产品 ID 范围 ────────────────
+  if (scopeCurrent && !prodIds) {
+    try {
+      // 收集当次策略覆盖的产线
+      const tmpStrategies: SchedulingStrategy[] = [];
+      if (!strategyParam || strategyParam === 'EE')  tmpStrategies.push(new EEStrategy());
+      if (!strategyParam || strategyParam === 'ESG') tmpStrategies.push(new ESGStrategy());
+      const scopeLines = tmpStrategies.flatMap((s) => s.getFallbackLines());
+      const scopeLineList = scopeLines.map((l) => `'${l}'`).join(', ');
+
+      const [scopeRows] = await ctx.db.sequelize.query(
+        `SELECT DISTINCT "prodId" FROM schedule_results_v2
+          WHERE "chosenLine" IN (${scopeLineList})`,
+      ) as any;
+      prodIds = (scopeRows as any[]).map((r: any) => r.prodId).filter(Boolean);
+      ctx.logger?.info?.(`[Init] scope=current: restricted to ${prodIds.length} prodIds from current results`);
+    } catch (e: any) {
+      ctx.logger?.warn?.('[Init] scope=current query failed, falling back to full fetch: ' + e?.message);
+      prodIds = undefined;
+    }
+  }
+
+  const runMode = prodIds ? (scopeCurrent ? 'CURRENT_RESULTS' : 'SELECTED') : 'FULL';
 
   const strategies: SchedulingStrategy[] = [];
   if (!strategyParam || strategyParam === 'EE')  strategies.push(new EEStrategy());

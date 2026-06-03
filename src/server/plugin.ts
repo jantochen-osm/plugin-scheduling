@@ -6,6 +6,7 @@ import { previewOrders } from './actions/previewOrders';
 import { lastRun } from './actions/lastRun';
 import { listRuns } from './actions/listRuns';
 import { removeResults } from './actions/removeResults';
+import { reScheduleAfterAdjust } from './actions/reScheduleAfterAdjust';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -58,22 +59,45 @@ export class PluginSchedulingServer extends Plugin {
   }
 
   async load() {
-    // 注册排产 API 端点
+    // ── 服务启动时自动补建字段（幂等，IF NOT EXISTS）────────────────────
+    // 不依赖 API 首次调用，确保服务启动即可用
+    const ddlStatements = [
+      `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "pinnedBy" varchar(100)`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "runType" varchar(20) DEFAULT 'FULL'`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "pinnedCount" integer DEFAULT 0`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "reScheduledCount" integer DEFAULT 0`,
+    ];
+    for (const sql of ddlStatements) {
+      try {
+        await this.app.db.sequelize.query(sql);
+      } catch (e: any) {
+        // 字段已存在或表不存在时静默忽略
+        this.app.logger?.warn?.(`[Scheduling] DDL skipped: ${sql.slice(0, 60)}… (${e?.message || e})`);
+      }
+    }
+
+    // ── 注册排产 API 端点 ──────────────────────────────────────────────
     this.app.resourceManager.define({
       name: 'scheduling',
       actions: {
-        run:           runScheduling,
-        validate:      validateSchedule,
-        adjustResult,        // 人工调整排产结果
-        previewOrders,       // 订单选择预览（无副作用）
-        lastRun,             // 最近一次运行摘要（raw SQL，绕过 ORM 字段校验）
-        listRuns,            // 排产历史列表（分页，raw SQL）
-        removeResults,       // 撤销指定订单的排产结果
+        run:                   runScheduling,
+        validate:              validateSchedule,
+        adjustResult,          // 人工调整排产结果
+        previewOrders,         // 订单选择预览（无副作用）
+        lastRun,               // 最近一次运行摘要（raw SQL，绕过 ORM 字段校验）
+        listRuns,              // 排产历史列表（分页，raw SQL）
+        removeResults,         // 撤销指定订单的排产结果
+        reScheduleAfterAdjust, // 调整后重计算（保留锁定记录，仅重排未锁定订单）
       },
     });
 
-    // 开放权限
-    this.app.acl.allow('scheduling', ['run', 'validate', 'adjustResult', 'previewOrders', 'lastRun', 'listRuns', 'removeResults'], 'loggedIn');
+    // ── 开放权限 ───────────────────────────────────────────────────────
+    this.app.acl.allow(
+      'scheduling',
+      ['run', 'validate', 'adjustResult', 'previewOrders',
+       'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust'],
+      'loggedIn',
+    );
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');
     this.app.acl.allow('schedule_results_v2', ['list', 'get', 'update'], 'loggedIn');
     this.app.acl.allow('schedule_exceptions_v2', ['list', 'get'], 'loggedIn');

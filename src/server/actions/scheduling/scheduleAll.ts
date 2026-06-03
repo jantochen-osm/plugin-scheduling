@@ -247,6 +247,14 @@ export async function scheduleAll(
   strategy: SchedulingStrategy,
   /** LLM 决策图表（prodId → decision），缺省 undefined 走原算法 */
   decisionMap?: Map<string, SchedulingDecision>,
+  /**
+   * 可选：预置产线状态（来自锁定记录的 preOccupyPinnedResults 结果）。
+   * 重算时传入，使排产感知已锁定记录占用的产线完成日期和最后物料。
+   */
+  initialState?: {
+    lineLastFinish?: Record<string, string>;
+    lineLastItem?: Record<string, string>;
+  },
 ) {
   const results: any[] = [];
   const exceptions: any[] = [];
@@ -275,6 +283,18 @@ export async function scheduleAll(
   /** 各产线最近提交订单的历史，用于回溯翻倍人手 */
   const lineHistory: Record<string, LineHistEntry | null> = {};
   for (const l of lineCodes) { lineLoad[l] = 0; lineLastItem[l] = ''; lineLastFinish[l] = ''; lineHistory[l] = null; }
+
+  // 若传入 initialState（重算场景），用锁定记录的产线状态覆盖初始值
+  if (initialState?.lineLastFinish) {
+    for (const [line, date] of Object.entries(initialState.lineLastFinish)) {
+      if (date) lineLastFinish[line] = date;
+    }
+  }
+  if (initialState?.lineLastItem) {
+    for (const [line, item] of Object.entries(initialState.lineLastItem)) {
+      if (item) lineLastItem[line] = item;
+    }
+  }
 
   const weights = cfg.lineSelectWeights;
 
@@ -799,4 +819,68 @@ export async function scheduleAll(
   });
 
   return { results, exceptions, lineUtilization };
+}
+
+// ── 锁定记录产能预占 ──────────────────────────────────────────────────
+/**
+ * 将 isManualAdjusted=true 的锁定记录预先占用到产能池。
+ *
+ * 重算（reScheduleAfterAdjust）时调用：
+ *   - 在 step5_initCapacityPool 之后、scheduleAll 之前执行
+ *   - 锁定记录的 dailyPlan 按 uph 反推工时并 allocate 到产能池
+ *
+ * ⚠️ 设计决策：本函数「只预占产能，不更新 lineLastFinish / lineLastItem」
+ *   锁定订单的语义是"该日期/产线的产能已承诺"，而不是"其他订单必须在它之后排"。
+ *   若更新 lineLastFinish，调度器会把所有后续订单连锁推到锁定日期之后，
+ *   导致高优先级逾期单也被错误延后，违背交期优先规则。
+ *   lineLastFinish / lineLastItem 由 scheduleAll 主循环在排完每个非锁定订单后自动维护。
+ *
+ * @param pinnedResults   isManualAdjusted=true 的排产记录数组
+ * @param capacityPool    已初始化的产能池（step5 产物）
+ * @param lineLastFinish  保留参数（本函数不写入，由 scheduleAll 主循环维护）
+ * @param lineLastItem    保留参数（本函数不写入，由 scheduleAll 主循环维护）
+ */
+export function preOccupyPinnedResults(
+  pinnedResults: any[],
+  capacityPool: CapacityPool,
+  lineLastFinish: Record<string, string>,   // 保留签名兼容性，本函数不写入
+  lineLastItem: Record<string, string>,     // 保留签名兼容性，本函数不写入
+): void {
+  const todayStr = getTodayStr();
+  const skippedHistorical: string[] = [];
+
+  for (const r of pinnedResults) {
+    const line = r.chosenLine;
+    if (!line) continue;
+
+    const uph = Number(r.uph) || 1;
+    const dailyPlan: Record<string, number> =
+      typeof r.dailyPlan === 'string'
+        ? JSON.parse(r.dailyPlan || '{}')
+        : (r.dailyPlan || {});
+
+    // 从 dailyPlan 取实际有效产量的最晚日期（不用 finishDate，可能是旧值）
+    const validDates = Object.entries(dailyPlan)
+      .filter(([, qty]) => (qty as number) > 0)
+      .map(([d]) => d)
+      .sort();
+    const latestDailyPlanDate = validDates.at(-1) || '';
+
+    // 历史日期锁定记录跳过：容量池从 today 起始，历史日期无产能槽，allocate 无效
+    if (latestDailyPlanDate && latestDailyPlanDate < todayStr) {
+      skippedHistorical.push(`${r.prodId}@${line}(latestDailyPlan=${latestDailyPlanDate})`);
+      continue;
+    }
+
+    // ── 唯一操作：预占产能槽 ──────────────────────────────────────────
+    // 不更新 lineLastFinish / lineLastItem，让非锁定订单按交期规则自由竞争空闲产能
+    for (const [date, qty] of Object.entries(dailyPlan)) {
+      const hours = (qty as number) / uph;
+      if (hours > 0) capacityPool.allocate(line, date, hours);
+    }
+  }
+
+  if (skippedHistorical.length > 0) {
+    (preOccupyPinnedResults as any)._lastSkipped = skippedHistorical;
+  }
 }
