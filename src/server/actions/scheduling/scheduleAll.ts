@@ -60,12 +60,13 @@ function rankCandidateLines(
   lineCodes: string[],
   lineLoad: Record<string, number>,
   lineLastItem: Record<string, string>,
+  lineLastFinish: Record<string, string>,
   capacityPool: CapacityPool,
   mo: any,
   uph: number,
   earliestStart: string,
   targetDlv: string,
-  weights: { capacity: number; setupAffinity: number; loadBalance: number },
+  weights: { capacity: number; setupAffinity: number; loadBalance: number; continuity: number },
 ): string[] {
   const maxLoad = Math.max(...lineCodes.map((l) => lineLoad[l] || 0), 1);
   const neededHours = uph > 0 ? mo.qtySched / uph : 1;
@@ -78,10 +79,28 @@ function rankCandidateLines(
       for (let d = new Date(earliestStart), dEnd = new Date(targetDlv); d <= dEnd; d.setDate(d.getDate() + 1)) {
         windowCap += capacityPool.getAvailableHours(line, formatDate(d));
       }
-      const capScore = Math.min(windowCap / neededHours, 1.0);
+      const capScore      = Math.min(windowCap / neededHours, 1.0);
       const affinityScore = lineLastItem[line] === mo.itemId ? 1 : 0;
-      const loadScore = 1 - (lineLoad[line] || 0) / maxLoad;
-      const score = weights.capacity * capScore + weights.setupAffinity * affinityScore + weights.loadBalance * loadScore;
+      const loadScore     = 1 - (lineLoad[line] || 0) / maxLoad;
+
+      // 衔接度评分：前单完成日与本单最早开始日间隔越短，分越高
+      const continuityScore = (() => {
+        const lastFinish = lineLastFinish[line] || '';
+        if (!lastFinish) return 0.5; // 空线：中性分（不奖励也不惩罚）
+        const msPerDay = 86400000;
+        const gapDays = Math.round(
+          (new Date(earliestStart).getTime() - new Date(lastFinish).getTime()) / msPerDay,
+        );
+        if (gapDays <= 1) return 1.0;  // 无缝衔接（前单完成日次日即开工）
+        if (gapDays <= 3) return 0.75; // 短暂空档（1-3 天）
+        if (gapDays <= 7) return 0.40; // 较长空档（4-7 天）
+        return 0.10;                   // 断档超过 1 周，不鼓励
+      })();
+
+      const score = weights.capacity      * capScore
+                  + weights.setupAffinity * affinityScore
+                  + weights.loadBalance   * loadScore
+                  + weights.continuity    * continuityScore;
       return { line, score };
     })
     .sort((a, b) => b.score - a.score)
@@ -207,8 +226,12 @@ function commitBestResult(
       extraCapacityPlan: Object.keys(ep).length > 0 ? ep : null,
       setupTimeUsed: lineSetupHours,
       costEstimate: bestResult.costEstimate,
+      earlyStartDays: (bestResult as any)?._earlyDays ?? 0,     // 实际提前天数（0=JIT）
+      isEarlyStart: ((bestResult as any)?._earlyDays ?? 0) > 0, // 是否提前开工
+      isOvertime: (bestResult as any)?._allowOT ?? false,        // 是否使用加班
       stage: stageName,
     });
+
   }
 
   return committed;
@@ -284,6 +307,12 @@ export async function scheduleAll(
     for (const stage of productStages) {
       const stageName = stage.stageName;
 
+      // Debug: LLM decision for this order (if any)
+      try {
+        const ddbg = decisionMap?.get(mo.prodId);
+        if (ddbg) console.log('[DEBUG][LLM_DECISION]', mo.prodId, JSON.stringify(ddbg));
+      } catch (e) { /* ignore debug error */ }
+
       // ── 获取允许产线 ──
       let allowedLines: string[];
       if (mo.keyAccount) {
@@ -342,8 +371,14 @@ export async function scheduleAll(
       // ── 产线评分 ──
       let rankedLines = rankCandidateLines(
         allowedLines, lineCodes, lineLoad, lineLastItem,
+        lineLastFinish,
         capacityPool, mo, uph, earliestStart, targetDlv, weights,
       );
+
+      // Debug: show allowed and ranked lines
+      try {
+        console.log('[DEBUG][RANKED_LINES]', mo.prodId, 'allowed=', allowedLines, 'ranked=', rankedLines.slice(0, 10));
+      } catch (e) {}
 
       // LLM 引导：将 preferredLines 排在前面（其余保持评分顺序追加）
       if (dec?.preferredLines?.length) {
@@ -357,18 +392,23 @@ export async function scheduleAll(
         continue;
       }
 
-      // ── Combo 枚举：人手递增(+1人) × 不加班→加班 × 单线→多线 ────────────
+      // ── Combo 枚举：提前开工优先于加班 ──────────────────────────────────
+      // 枚举顺序（优先级从高到低）：
+      //   人手 → [不加班 → 加班] → 提前天数(0..earlyStartMaxDays) → 产线数
+      // 保证"不加班+最大提前"仍优先于"加班+JIT"，提前开工从 JIT 基准日往前偏移，
+      // 上限 earlyStartMaxDays（不超过此天数），交期缓冲（jitBufferDays）始终保留。
       let bestResult: any = null;
       const maxLines = rankedLines.length;
 
-      // uphPerPerson：单人 UPH，每卡人从基准递增
+      // uphPerPerson：单人 UPH，每次递增 1 人
       const uphPerPerson = uph / headcount;
       // 最大尝试人数 = 基准人数 × maxHeadcountFactor（默认 4 倍）
       const maxHc = Math.round(headcount * (cfg.maxHeadcountFactor ?? 4));
+      // 提前开工最大天数（从 JIT 基准日向前偏移，不超此值）
+      const earlyStartMaxDays = cfg.earlyStartMaxDays ?? 7;
 
-      // 最外层：递增人手（hc = 当前开工总人数），找到满足交期的最小人数即停
       for (let hc = headcount; hc <= maxHc; hc++) {
-        if (bestResult?.finishDate <= dlvStr) break; // 已有准时方案，无需继续增加人手
+        if (bestResult?.finishDate <= dlvStr) break;
         // 保留 2 位小数，避免浮点误差（如 7.8087/15*20 = 156.17333...）
         const effectiveUph = Math.round(uphPerPerson * hc * 100) / 100;
 
@@ -377,57 +417,93 @@ export async function scheduleAll(
           // 增加人手时仅在单线试排（避免与多线叠加产生指数级组合）
           const maxNumLines = hc > headcount ? 1 : maxLines;
 
-          for (let numLines = 1; numLines <= maxNumLines; numLines++) {
-            if (bestResult?.finishDate <= dlvStr) break;
-            const combos = numLines === 1
-              ? rankedLines.slice(0, 1).map((l: string) => [l])
-              : getCombinations(rankedLines.slice(0, Math.min(numLines, 4)), numLines);
+          // 提前开工枚举：earlyDays=0 为接续优先/JIT，earlyDays=N 为提前 N 天。
+          // 只在以下两种情况继续枚举 earlyDays：
+          //   1. 尚无准时方案（还在寻找）
+          //   2. ESG(preferEarlyFinish)：更早完成更好，继续找更早结束的方案
+          for (let earlyDays = 0; earlyDays <= earlyStartMaxDays; earlyDays++) {
+            if (earlyDays > 0 && bestResult?.finishDate <= dlvStr && !cfg.preferEarlyFinish) break;
 
-            for (const linesToTry of combos) {
-              const setupH = linesToTry.some((l: string) => lineLastItem[l] !== mo.itemId) ? cfg.setupTimeHours : 0;
 
-              // 顺序约束：本订单必须在该产线上一单完成后才能开始。
-              // 优化：若上一单当天未用满产能，下一单可在同一天继续，充分利用剩余工时。
-              const primaryLine = linesToTry[0] || '';
-              const lineFinishDate = lineLastFinish[primaryLine] || '';
-              const lineEarliestDate = lineFinishDate
-                ? (capacityPool.getAvailableHours(primaryLine, lineFinishDate) > 0
-                  ? lineFinishDate               // 当天还有剩余产能，复用同一天
-                  : addDays(lineFinishDate, 1))  // 当天已满，顺移至次日
-                : today;
-              const effectiveEarliestStart = lineEarliestDate > earliestStart ? lineEarliestDate : earliestStart;
+            for (let numLines = 1; numLines <= maxNumLines; numLines++) {
+              if (bestResult?.finishDate <= dlvStr && !cfg.preferEarlyFinish) break;
+              const combos = numLines === 1
+                ? rankedLines.slice(0, 1).map((l: string) => [l])
+                : getCombinations(rankedLines.slice(0, Math.min(numLines, 4)), numLines);
 
-              const startFrom = calcLatestStart(
-                capacityPool, linesToTry, effectiveUph, mo.qtySched, setupH,
-                targetDlv, effectiveEarliestStart, true,
-              );
-              const res = tryScheduleStage(
-                mo, linesToTry, capacityPool, allowOT, effectiveUph,
-                dlvStr, effectiveEarliestStart, lineLastItem, cfg.setupTimeHours, startFrom,
-              );
-              // 附加元数据：_hc=本次使用的开工人数（绝对值）
-              if (res) {
-                (res as any)._hc = hc;
-                (res as any)._setupH = setupH;
-                (res as any)._effectiveEarliestStart = effectiveEarliestStart;
-              }
+              for (const linesToTry of combos) {
+                const setupH = linesToTry.some((l: string) => lineLastItem[l] !== mo.itemId) ? cfg.setupTimeHours : 0;
 
-              if (res.success && res.finishDate <= dlvStr) {
-                const betterOnTime = !bestResult
-                  || !bestResult.success || bestResult.finishDate > dlvStr
-                  || (cfg.preferEarlyFinish
-                    ? res.finishDate < bestResult.finishDate
-                    : res.costEstimate.totalCost < bestResult.costEstimate.totalCost);
-                if (betterOnTime) bestResult = res;
-              } else if (!bestResult || !bestResult.success || bestResult.finishDate > dlvStr) {
-                if (!bestResult || res.remaining < (bestResult.remaining ?? Infinity)) {
-                  bestResult = res;
+                // 顺序约束：本订单必须在该产线上一单完成后才能开始。
+                // 优化：若上一单当天未用满产能，下一单可在同一天继续，充分利用剩余工时。
+                const primaryLine = linesToTry[0] || '';
+                const lineFinishDate = lineLastFinish[primaryLine] || '';
+                const lineEarliestDate = lineFinishDate
+                  ? (capacityPool.getAvailableHours(primaryLine, lineFinishDate) > 0
+                    ? lineFinishDate               // 当天还有剩余产能，复用同一天
+                    : addDays(lineFinishDate, 1))  // 当天已满，顺移至次日
+                  : today;
+                const effectiveEarliestStart = lineEarliestDate > earliestStart ? lineEarliestDate : earliestStart;
+
+                // JIT 基准起始日（基于 targetDlv = bufferDlv，已含 jitBufferDays 缓冲）
+                const jitStart = calcLatestStart(
+                  capacityPool, linesToTry, effectiveUph, mo.qtySched, setupH,
+                  targetDlv, effectiveEarliestStart, true,
+                );
+
+                // 接续优先 → JIT 兜底：
+                //   若前单当天有剩余产能（lineEarliestDate == lineFinishDate），立刻接续；
+                //   否则用 JIT 基准日（calcLatestStart），避免无谓提前开工。
+                //   earlyDays>0 在 JIT 基础上进一步往前探索（如产能充裕时主动提前）。
+                const hasSameDayResidue = lineFinishDate &&
+                  capacityPool.getAvailableHours(primaryLine, lineFinishDate) > 0;
+                const startFrom = earlyDays === 0
+                  ? (hasSameDayResidue && lineFinishDate < jitStart ? lineFinishDate : jitStart)
+                  : (() => {
+                      const shifted = addDays(jitStart, -earlyDays);
+                      return shifted >= effectiveEarliestStart ? shifted : effectiveEarliestStart;
+                    })();
+
+                const res = tryScheduleStage(
+                  mo, linesToTry, capacityPool, allowOT, effectiveUph,
+                  dlvStr, effectiveEarliestStart, lineLastItem, cfg.setupTimeHours, startFrom,
+                );
+                // Debug: log each attempt summary
+                try {
+                  console.log('[DEBUG][TRY]', mo.prodId, { hc, allowOT, earlyDays, linesToTry, effectiveUph, startFrom, res: res ? { success: res.success, finishDate: res.finishDate, remaining: res.remaining, cost: res?.costEstimate?.totalCost } : null });
+                } catch (e) {}
+                // 附加元数据：_hc / _earlyDays / _allowOT 供 commitBestResult 读取
+                if (res) {
+                  (res as any)._hc = hc;
+                  (res as any)._setupH = setupH;
+                  (res as any)._effectiveEarliestStart = effectiveEarliestStart;
+                  (res as any)._earlyDays = earlyDays;
+                  (res as any)._allowOT = allowOT;
+                }
+
+                if (res.success && res.finishDate <= dlvStr) {
+                  const betterOnTime = !bestResult
+                    || !bestResult.success || bestResult.finishDate > dlvStr
+                    || (cfg.preferEarlyFinish
+                      ? res.finishDate < bestResult.finishDate
+                      : res.costEstimate.totalCost < bestResult.costEstimate.totalCost);
+                  if (betterOnTime) bestResult = res;
+                } else if (!bestResult || !bestResult.success || bestResult.finishDate > dlvStr) {
+                  if (!bestResult || res.remaining < (bestResult.remaining ?? Infinity)) {
+                    bestResult = res;
+                  }
                 }
               }
             }
           }
         }
       }
+
+
+      // Debug: bestResult after trying combos
+      try {
+        console.log('[DEBUG][BEST_RESULT]', mo.prodId, bestResult ? { finishDate: bestResult.finishDate, linesUsed: bestResult.linesUsed, remaining: bestResult.remaining, _hc: (bestResult as any)?._hc } : null);
+      } catch (e) {}
 
       // ── 回溯增加前序订单人手（当前单仍逾期时）────────────────────────────
 
@@ -450,33 +526,45 @@ export async function scheduleAll(
           const savedLineLastFinish = lineLastFinish[primaryLine];
           lineLastFinish[primaryLine] = hist.lineFinishBefore[primaryLine] || '';
 
-          // 2. 递增搜索：从当前+1人开始，寻找最小人数使当前订单可以准时
+          // 2. 双重搜索：增人 × 提前开工（先高效早开，同等条件下选最小增人）
+          // 从基准人数起试（不强制+1）：提前开工可能无需增人即可让前序单更早完成
           const prevUphPerPerson = hist.uph / hist.baseHeadcount;
-          let chosenBoostHc = hist.baseHeadcount + 1;
+          let chosenBoostHc = hist.baseHeadcount;
+          let chosenBoostEarlyDays = 0;
           let chosenBoostRes: any = null;
 
-          for (let bHc = hist.baseHeadcount + 1; bHc <= prevMaxHc; bHc++) {
+          BOOST_SEARCH:
+          for (let bHc = hist.baseHeadcount; bHc <= prevMaxHc; bHc++) {
             const bUph = Math.round(prevUphPerPerson * bHc * 100) / 100;
-            const bStartFrom = calcLatestStart(
-              capacityPool, hist.linesToTry, bUph, hist.orderRef.qtySched, hist.setupH,
-              hist.targetDlvOfOrder, hist.effectiveEarliestStart, true,
-            );
-            const bRes = tryScheduleStage(
-              hist.orderRef, hist.linesToTry, capacityPool, false, bUph,
-              hist.dlvStr, hist.effectiveEarliestStart, lineLastItem, cfg.setupTimeHours, bStartFrom,
-            );
-            if (!bRes.success) continue;
 
-            chosenBoostRes = bRes;
-            chosenBoostHc  = bHc;
+            for (let bEarly = 0; bEarly <= earlyStartMaxDays; bEarly++) {
+              const bJitStart = calcLatestStart(
+                capacityPool, hist.linesToTry, bUph, hist.orderRef.qtySched, hist.setupH,
+                hist.targetDlvOfOrder, hist.effectiveEarliestStart, true,
+              );
+              const bShifted = bEarly === 0 ? bJitStart : addDays(bJitStart, -bEarly);
+              const bStartFrom = bShifted >= hist.effectiveEarliestStart
+                ? bShifted : hist.effectiveEarliestStart;
 
-            // 估算：前序订单在 bRes.finishDate 完成后，当前单能否准时
-            // 使用粗略估算：当天 10 小时，“所需天数” = ceil(qtySched / uph / 10)
-            const tentativeStart = bRes.finishDate > earliestStart ? bRes.finishDate : earliestStart;
-            const neededDays = Math.ceil(mo.qtySched / uph / 10);
-            const estimatedFinish = addDays(tentativeStart, neededDays);
-            if (estimatedFinish <= dlvStr) break;  // 找到满足交期的最小人数
+              const bRes = tryScheduleStage(
+                hist.orderRef, hist.linesToTry, capacityPool, false, bUph,
+                hist.dlvStr, hist.effectiveEarliestStart, lineLastItem, cfg.setupTimeHours, bStartFrom,
+              );
+              if (!bRes.success) continue;
+
+              chosenBoostRes       = bRes;
+              chosenBoostHc        = bHc;
+              chosenBoostEarlyDays = bEarly;
+
+              // 估算：前序订单完成后，当前单能否准时（粗略：10h/天）
+              const tentativeStart = bRes.finishDate > earliestStart ? bRes.finishDate : earliestStart;
+              const neededDays = Math.ceil(mo.qtySched / uph / 10);
+              const estimatedFinish = addDays(tentativeStart, neededDays);
+              if (estimatedFinish <= dlvStr) break BOOST_SEARCH;
+            }
           }
+          // 确保 chosenBoostEarlyDays 已引用（防止 TS 未使用变量警告）
+          void chosenBoostEarlyDays;
 
           if (chosenBoostRes && chosenBoostRes.success) {
             const boostUph = Math.round(prevUphPerPerson * chosenBoostHc * 100) / 100;
@@ -531,46 +619,52 @@ export async function scheduleAll(
               lineLoadDeltaPerLine: newLoadDelta,
             };
 
-            // 7. 用更新后的 lineLastFinish 重试当前订单（递增尝试人手）
+            // 7. 用更新后的 lineLastFinish 重试当前订单（递增人手 + 提前开工，顺序同主 Combo 枚举）
             for (let hc = headcount; hc <= maxHc; hc++) {
               if (bestResult?.finishDate <= dlvStr) break;
               const effectiveUph = Math.round(uphPerPerson * hc * 100) / 100;
               for (const allowOT of [false, true]) {
                 if (bestResult?.finishDate <= dlvStr) break;
-                const lfDateR = lineLastFinish[primaryLine] || '';
-                const leDateR = lfDateR
-                  ? (capacityPool.getAvailableHours(primaryLine, lfDateR) > 0 ? lfDateR : addDays(lfDateR, 1))
-                  : today;
-                const eesR = leDateR > earliestStart ? leDateR : earliestStart;
-                const retrySetupH = lineLastItem[primaryLine] !== mo.itemId ? cfg.setupTimeHours : 0;
-                const startFromR = calcLatestStart(
-                  capacityPool, [primaryLine], effectiveUph, mo.qtySched, retrySetupH,
-                  targetDlv, eesR, true,
-                );
-                const retryRes = tryScheduleStage(
-                  mo, [primaryLine], capacityPool, allowOT, effectiveUph,
-                  dlvStr, eesR, lineLastItem, cfg.setupTimeHours, startFromR,
-                );
-                if (retryRes) {
-                  (retryRes as any)._hc = hc;
-                  (retryRes as any)._setupH = retrySetupH;
-                  (retryRes as any)._effectiveEarliestStart = eesR;
-                }
-                if (retryRes.success && retryRes.finishDate <= dlvStr) {
-                  const better = !bestResult || !bestResult.success || bestResult.finishDate > dlvStr
-                    || (cfg.preferEarlyFinish
-                      ? retryRes.finishDate < bestResult.finishDate
-                      : retryRes.costEstimate.totalCost < bestResult.costEstimate.totalCost);
-                  if (better) bestResult = retryRes;
-                } else if (!bestResult || !bestResult.success || bestResult.finishDate > dlvStr) {
-                  if (!bestResult || retryRes.remaining < (bestResult.remaining ?? Infinity)) {
-                    bestResult = retryRes;
+                for (let earlyDays = 0; earlyDays <= earlyStartMaxDays; earlyDays++) {
+                  if (bestResult?.finishDate <= dlvStr) break;
+                  const lfDateR = lineLastFinish[primaryLine] || '';
+                  const leDateR = lfDateR
+                    ? (capacityPool.getAvailableHours(primaryLine, lfDateR) > 0 ? lfDateR : addDays(lfDateR, 1))
+                    : today;
+                  const eesR = leDateR > earliestStart ? leDateR : earliestStart;
+                  const retrySetupH = lineLastItem[primaryLine] !== mo.itemId ? cfg.setupTimeHours : 0;
+                  const jitStartR = calcLatestStart(
+                    capacityPool, [primaryLine], effectiveUph, mo.qtySched, retrySetupH,
+                    targetDlv, eesR, true,
+                  );
+                  const shiftedR = earlyDays === 0 ? jitStartR : addDays(jitStartR, -earlyDays);
+                  const startFromR = shiftedR >= eesR ? shiftedR : eesR;
+                  const retryRes = tryScheduleStage(
+                    mo, [primaryLine], capacityPool, allowOT, effectiveUph,
+                    dlvStr, eesR, lineLastItem, cfg.setupTimeHours, startFromR,
+                  );
+                  if (retryRes) {
+                    (retryRes as any)._hc = hc;
+                    (retryRes as any)._setupH = retrySetupH;
+                    (retryRes as any)._effectiveEarliestStart = eesR;
+                    (retryRes as any)._earlyDays = earlyDays;
+                    (retryRes as any)._allowOT = allowOT;
+                  }
+                  if (retryRes.success && retryRes.finishDate <= dlvStr) {
+                    const better = !bestResult || !bestResult.success || bestResult.finishDate > dlvStr
+                      || (cfg.preferEarlyFinish
+                        ? retryRes.finishDate < bestResult.finishDate
+                        : retryRes.costEstimate.totalCost < bestResult.costEstimate.totalCost);
+                    if (better) bestResult = retryRes;
+                  } else if (!bestResult || !bestResult.success || bestResult.finishDate > dlvStr) {
+                    if (!bestResult || retryRes.remaining < (bestResult.remaining ?? Infinity)) {
+                      bestResult = retryRes;
+                    }
                   }
                 }
               }
             }
           } else {
-            // 增人失败：恢复原始分配与状态
             for (const [ln, dateHoursMap] of Object.entries(hist.allocatedPerLine)) {
               for (const [date, hrs] of Object.entries(dateHoursMap)) {
                 capacityPool.allocate(ln, date, hrs);
@@ -581,6 +675,7 @@ export async function scheduleAll(
             }
             lineLastFinish[primaryLine] = savedLineLastFinish || '';
           }
+
         }
       }
 

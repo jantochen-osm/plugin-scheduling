@@ -8,13 +8,26 @@
  *       由 SchedulingStrategy.getConfig() 提供，不在此定义。
  */
 
-// ── Mock 日期（仅供测试）────────────────────────────────────────────
-/** 设为空字符串以使用系统真实日期 */
+/**
+ * 排产历史起点日期。
+ *
+ * 这不是"测试 Mock 日期"，而是产能池和排产计算的最早起点。
+ *
+ * 必须早于所有已开工订单的实际开始日期。
+ * 例：工厂订单最早从 2026-05-22 开工，此值必须 ≤ 2026-05-22。
+ *
+ * 若设为空，则使用系统当天日期 —— 这会导致历史订单失去产能上下文，
+ * 所有订单被强制从当天重排，产生大量逾期和不合理增人。
+ */
 export const MOCK_TODAY = '2026-01-01';
 
 // ── 日期工具函数 ────────────────────────────────────────────────────
 export function formatDate(d: Date): string {
-  return d.toISOString().split('T')[0];
+  // 使用本地时区日期（避免 UTC+8 环境下 toISOString 导致日期偏移 -1 天）
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 export function addDays(dateStr: string, n: number): string {

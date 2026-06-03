@@ -29,9 +29,10 @@ export async function step1_fetchOrders(ctx: Context, prodIds?: string[]) {
     prodId: r.prodid,
     itemId: r.itemid,
     qtySched: Number(r.qtysched) || 0,
-    // 统一归一化为 'YYYY-MM-DD'，避免 UTC 时区 off-by-one
+    // 使用本地时区 formatDate，避免 UTC+8 环境下 toISOString 导致日期偏移 -1 天
+    // 例：2026-06-05T00:00:00+08:00 → toISOString = 2026-06-04T16:00Z → 错误地解析为 06/04
     dlvDate: r.dlvdate instanceof Date
-      ? r.dlvdate.toISOString().split('T')[0]
+      ? formatDate(r.dlvdate)               // 使用本地日期格式化
       : r.dlvdate ? String(r.dlvdate).split('T')[0] : '',
     prodStatus: r.prodstatus,
     prodPoolId: r.prodpoolid,

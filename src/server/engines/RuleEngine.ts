@@ -124,7 +124,7 @@ export class RuleEngine {
     for (const r of rows) {
       const dateStr =
         r.exceptionDate instanceof Date
-          ? r.exceptionDate.toISOString().split('T')[0]
+          ? `${r.exceptionDate.getFullYear()}-${String(r.exceptionDate.getMonth()+1).padStart(2,'0')}-${String(r.exceptionDate.getDate()).padStart(2,'0')}`
           : String(r.exceptionDate).split('T')[0];
       this.calendarExceptionCache.set(dateStr, {
         exceptionDate: dateStr,
@@ -146,7 +146,7 @@ export class RuleEngine {
     for (const r of rows) {
       const dateStr =
         r.calendarDate instanceof Date
-          ? r.calendarDate.toISOString().split('T')[0]
+          ? `${r.calendarDate.getFullYear()}-${String(r.calendarDate.getMonth()+1).padStart(2,'0')}-${String(r.calendarDate.getDate()).padStart(2,'0')}`
           : String(r.calendarDate || '').split('T')[0];
       if (!dateStr) continue;
       this.workCalendarCache.set(dateStr, {

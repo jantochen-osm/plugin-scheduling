@@ -29,11 +29,13 @@ const ESG_CONFIG: SchedulingConfig = {
   preferEarlyFinish: true, // 顺序排队：当前单尽快完成 = 产线尽早释放 = 后续单越容易准时
   fallbackLines: ['4F1', '4F2', '4F4', '4F6'], // 不含 4F3/4F5 试产线
   lineSelectWeights: {
-    capacity: 0.3,
-    setupAffinity: 0.5,
-    loadBalance: 0.2,
+    capacity:      0.25, // 原 0.30，降低 0.05 给衔接度
+    setupAffinity: 0.50, // 不变：换型亲和最重要
+    loadBalance:   0.10, // 原 0.20，降低 0.10 给衔接度
+    continuity:    0.15, // 新增：产线衔接度（前单完成越近，优先级越高）
   },
-  maxHeadcountFactor: 4, // 最多尝试 4 倍基准人数（+1人/次递增）
+  maxHeadcountFactor: 4,  // 最多尝试 4 倍基准人数（+1人/次递增）
+  earlyStartMaxDays:  7,  // 最多提前 7 天开工（从 JIT 基准日向前）
 };
 
 export class ESGStrategy implements SchedulingStrategy {

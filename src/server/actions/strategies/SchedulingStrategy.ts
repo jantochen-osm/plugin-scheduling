@@ -36,6 +36,8 @@ export interface SchedulingConfig {
     capacity: number;
     setupAffinity: number;
     loadBalance: number;
+    /** 产线衔接度权重（前单完成日越接近本单开始日，得分越高）*/
+    continuity: number;
   };
   /**
    * 人手增加上限（相对于工艺路线基准人数的倍数）。
@@ -46,6 +48,12 @@ export interface SchedulingConfig {
    * 默认值：4（最多 4 倍基准人数）
    */
   maxHeadcountFactor?: number;
+  /**
+   * 提前开工最大天数（从 JIT 基准日向前偏移，不超此值）。
+   * 0 = 严格 JIT；7 = 最多提前一周开工。
+   * 与 jitBufferDays 合并：提前量从 bufferDlv 计算，交期缓冲始终保留。
+   */
+  earlyStartMaxDays?: number;
 }
 
 

@@ -47,8 +47,8 @@ Field definitions:
 
 1. **Item prefix routing (highest priority)**
    - Amazon customer AND `itemId` starts with `AMZ-55-` or `55-` (case-insensitive)
-     → Force line **4F4** (Chicha line), ignore `lineMapping`
-   - Example: `itemId = AMZ-55-004315` for Amazon → `preferredLines: ["4F4"]`
+     → Force line **4F2** (Chicha line), ignore `lineMapping`
+   - Example: `itemId = AMZ-55-004315` for Amazon → `preferredLines: ["4F2"]`
 
 2. **Customer mapping**
    - Look up `lineMapping` for the customer's assigned lines
@@ -148,10 +148,10 @@ Rules:
 ```json
 {
   "decisions": [
-    { "prodId": "ZMO00001", "priority": 1, "preferredLines": ["4F4"], "headcountMultiplier": 2.0, "allowOvertime": true,  "skip": false },
+    { "prodId": "ZMO00001", "priority": 1, "preferredLines": ["4F2"], "headcountMultiplier": 2.0, "allowOvertime": true,  "skip": false },
     { "prodId": "ZMO00002", "priority": 2, "preferredLines": ["4F1"], "headcountMultiplier": 1.0, "allowOvertime": false, "skip": false },
     { "prodId": "ZMO00003", "priority": 3, "preferredLines": ["4F4"], "headcountMultiplier": 1.0, "allowOvertime": false, "skip": false }
   ],
-  "reasoning": "ZMO00001 is 23 days overdue and its item prefix forces Chicha line (4F4), so it takes top priority with double headcount and overtime; remaining orders are grouped by customer and sorted by delivery date."
+  "reasoning": "ZMO00001 is 23 days overdue and its item prefix forces Chicha line (4F2), so it takes top priority with double headcount and overtime; remaining orders are grouped by customer and sorted by delivery date."
 }
 ```
