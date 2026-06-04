@@ -10,3 +10,9 @@ export { step1_fetchOrders, step2_validateAndEnrich, step3_sort, step4_collectLi
 export { calcLatestStart } from './calcLatestStart';
 export { getCombinations, tryScheduleStage } from './tryScheduleStage';
 export { scheduleAll, preOccupyPinnedResults } from './scheduleAll';
+// 子模块按需导出（供外部单独测试或扩展）
+export { rankCandidateLines } from './rankLines';
+export { commitBestResult } from './commitResult';
+export { backtrackBoostHeadcount } from './backtrack';
+export { cleanDailyPlans, calcLineUtilization } from './postProcess';
+export type { LineHistEntry, LineUtilEntry } from './types';
