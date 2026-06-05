@@ -1,382 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Table, Tag, Typography, Space, message, Button, Radio, Popover, Descriptions,
-  Drawer, Form, Select, DatePicker, InputNumber, Input, Alert, Divider, Tooltip,
-  Switch, Popconfirm,
+  Table, Tag, Typography, Space, message, Button, Radio,
+  Popover, Tooltip, Popconfirm,
 } from 'antd';
-import * as _dayjs from 'dayjs';
-const dayjs: any = _dayjs;
+import { dayjs, formatNum } from './gantt/utils';
+import { CapacityDetailCard } from './gantt/CapacityDetailCard';
+import { AdjustDrawer } from './gantt/AdjustDrawer';
+import { DraggableGantt } from './gantt/DraggableGantt';
 
 const { Text, Title } = Typography;
-
-
-const formatNum = (num: any, decimals = 0): number => {
-  if (num === undefined || num === null || isNaN(num)) return 0;
-  const n = Number(num);
-  if (Math.abs(n) < 0.0001) return 0;
-  return Number(n.toFixed(decimals));
-};
-
-// ============================================================================
-// 量能明细悬浮卡片
-// ============================================================================
-const CapacityDetailCard: React.FC<{ date: string; detail: any; isGlobalRest: boolean }> = ({
-  date, detail, isGlobalRest,
-}) => {
-  if (!detail) {
-    return (
-      <div style={{ padding: '8px 4px' }}>
-        <Text type="secondary" style={{ fontSize: 13 }}>
-          {isGlobalRest ? '休息日 / 无排产计划' : '当日无排产明细'}
-        </Text>
-      </div>
-    );
-  }
-
-  const getDayTypeTag = (type: string) => {
-    switch (type) {
-      case 'WORKDAY': return <Tag color="green" style={{ margin: 0, border: 'none' }}>工作日</Tag>;
-      case 'OVERTIME': return <Tag color="orange" style={{ margin: 0, border: 'none' }}>加班日</Tag>;
-      case 'WEEKEND': return <Tag color="default" style={{ margin: 0, border: 'none' }}>周末/假</Tag>;
-      case 'HOLIDAY': return <Tag color="magenta" style={{ margin: 0, border: 'none' }}>法定节假日</Tag>;
-      case 'MAINTENANCE': return <Tag color="purple" style={{ margin: 0, border: 'none' }}>设备保养</Tag>;
-      default: return <Tag color="blue" style={{ margin: 0, border: 'none' }}>{type || '未知'}</Tag>;
-    }
-  };
-
-  const hasProductionTask = formatNum(detail.totalQty) > 0 || formatNum(detail.effectiveHours, 2) > 0;
-
-  return (
-    <div style={{ width: 270 }}>
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        paddingBottom: 12, marginBottom: 16, borderBottom: '1px solid #f0f0f0',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-          <Text strong style={{ fontSize: 16 }}>{date}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>{detail.dayLabel || dayjs(date).format('dddd')}</Text>
-        </div>
-        {getDayTypeTag(detail.dayType)}
-      </div>
-      {!hasProductionTask ? (
-        <Text type="secondary" style={{ fontSize: 13 }}>当日无排班或生产任务</Text>
-      ) : (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <div style={{ backgroundColor: '#fafafa', padding: '14px 16px', borderRadius: 8, border: '1px solid #f0f0f0' }}>
-            <div style={{ marginBottom: 6 }}><Text type="secondary" style={{ fontSize: 12 }}>总排产 (PCS)</Text></div>
-            <div style={{ fontSize: 26, fontWeight: '900', color: '#1677ff', lineHeight: 1 }}>{formatNum(detail.totalQty)}</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12, fontSize: 12, borderTop: '1px dashed #e8e8e8', paddingTop: 10 }}>
-              <Text type="secondary">标准: <Text strong style={{ color: 'rgba(0, 0, 0, 0.88)', fontSize: 13 }}>{formatNum(detail.standardQty)}</Text></Text>
-              <Text type="secondary">加班: <Text strong type={formatNum(detail.overtimeQty) > 0 ? 'warning' : 'secondary'} style={{ fontSize: 13 }}>{formatNum(detail.overtimeQty)}</Text></Text>
-            </div>
-          </div>
-          <Descriptions size="small" column={2} layout="vertical" colon={false} style={{ margin: 0 }}>
-            <Descriptions.Item label={<Text type="secondary" style={{ fontSize: 12 }}>计划总耗时</Text>} style={{ paddingBottom: 8 }}>
-              <Text strong>{formatNum((Number(detail.effectiveHours) || 0) + (Number(detail.overtimeHours) || 0) + (Number(detail.setupHours) || 0), 2)}h</Text>
-              {formatNum(detail.setupHours, 2) > 0 && <span style={{ fontSize: 12, color: '#ff4d4f', marginLeft: 4 }}>(-{formatNum(detail.setupHours, 2)}h)</span>}
-            </Descriptions.Item>
-            <Descriptions.Item label={<Text type="secondary" style={{ fontSize: 12 }}>实际人力</Text>} style={{ paddingBottom: 8 }}>
-              <Text strong>{formatNum(detail.actualHeadcount)}人</Text>
-              {formatNum(detail.actualHeadcount) > formatNum(detail.headcount) && <Tag color="warning" bordered={false} style={{ marginLeft: 4, padding: '0 4px', fontSize: 10 }}>借调</Tag>}
-            </Descriptions.Item>
-            <Descriptions.Item label={<Text type="secondary" style={{ fontSize: 12 }}>有效 UPH</Text>} style={{ paddingBottom: 0 }}>
-              <Text strong>{formatNum(detail.effectiveUph, 2) || '-'}</Text>
-            </Descriptions.Item>
-            <Descriptions.Item label={<Text type="secondary" style={{ fontSize: 12 }}>单人 UPH</Text>} style={{ paddingBottom: 0 }}>
-              <Text strong>{formatNum(detail.perPersonUph, 2) || '-'}</Text>
-            </Descriptions.Item>
-          </Descriptions>
-        </Space>
-      )}
-    </div>
-  );
-};
-
-// ============================================================================
-// 调整 Drawer
-// ============================================================================
-const ESG_LINES = ['4F1', '4F2', '4F4', '4F6'];
-
-const AdjustDrawer: React.FC<{
-  open: boolean; record: any; onClose: () => void; onSaved: () => void; api: any;
-}> = ({ open, record, onClose, onSaved, api }) => {
-  const [form] = Form.useForm();
-  const [loading, setLoading] = useState(false);
-  const [patchMap, setPatchMap] = useState<Record<string, number>>({});
-  const [addedDates, setAddedDates] = useState<Set<string>>(new Set());
-  const [newDateInput, setNewDateInput] = useState<any>(null);
-  const [newQtyInput, setNewQtyInput] = useState(0);
-  const [showAddRow, setShowAddRow] = useState(false);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  const [autoReSchedule, setAutoReSchedule] = useState(false);
-
-  useEffect(() => {
-    if (open && record) {
-      form.setFieldsValue({
-        chosenLine: record.chosenLine,
-        startDate: record.startDate ? dayjs(record.startDate) : null,
-        finishDate: record.finishDate ? dayjs(record.finishDate) : null,
-        adjustReason: record.adjustReason || '',
-      });
-      const plan = record.dailyPlan || {};
-      const init: Record<string, number> = {};
-      Object.entries(plan).forEach(([d, q]) => { init[d] = Number(q); });
-      setPatchMap(init);
-      setAddedDates(new Set());
-      setNewDateInput(null);
-      setNewQtyInput(0);
-      setShowAddRow(false);
-      setAutoReSchedule(false);
-    }
-  }, [open, record]);
-
-  const handleSave = async () => {
-    let values: any;
-    try { values = await form.validateFields(); } catch { return; }
-
-    const originalPlan = record.dailyPlan || {};
-    const changedPatch: Record<string, number> = {};
-    Object.entries(patchMap).forEach(([d, q]) => {
-      if (Number(q) !== Number((originalPlan as any)[d] ?? -1)) {
-        changedPatch[d] = Number(q);
-      }
-    });
-
-    const payload: any = {
-      id: record.id,
-      chosenLine: values.chosenLine,
-      startDate: values.startDate?.format('YYYY-MM-DD'),
-      finishDate: values.finishDate?.format('YYYY-MM-DD'),
-      adjustReason: values.adjustReason,
-      ...(Object.keys(changedPatch).length > 0 ? { dailyPlanPatch: changedPatch } : {}),
-      autoReSchedule,
-    };
-
-    setLoading(true);
-    try {
-      const res = await api.request({
-        url: 'scheduling:adjustResult',
-        method: 'post',
-        data: payload,
-      });
-      message.success(autoReSchedule ? '✅ 调整已保存，后台重算中…' : '✅ 调整已保存');
-      // 若服务端检测到历史日期，展示警告
-      const warnings: string[] = res?.data?.warnings || [];
-      if (warnings.length > 0) {
-        setTimeout(() => {
-          warnings.forEach((w) => message.warning(w, 8));
-        }, 500);
-      }
-      onClose();
-      onSaved();
-    } catch (e: any) {
-      message.error('保存失败：' + (e?.message || '未知错误'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (!record) return null;
-
-  const allDates = [...new Set([
-    ...Object.keys(record.dailyPlan || {}),
-    ...Array.from(addedDates),
-  ])];
-
-  return (
-    <Drawer
-      title={
-        <Space>
-          <span>✎ 调整排产结果</span>
-          {record.isManualAdjusted && <Tag color="orange" style={{ fontSize: 11 }}>已调整</Tag>}
-        </Space>
-      }
-      width={480} open={open} onClose={onClose} destroyOnClose
-      footer={
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          {/* 左侧：解锁按钮（仅已锁定记录显示）*/}
-          <div>
-            {record?.isManualAdjusted && (
-              <Popconfirm
-                title={
-                  <div>
-                    <div style={{ fontWeight: 600 }}>确定解锁此记录？</div>
-                    <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
-                      解锁后，点击"调整后重算"时此订单将被重新计算。
-                    </div>
-                  </div>
-                }
-                onConfirm={async () => {
-                  try {
-                    await api.request({
-                      url: 'scheduling:adjustResult',
-                      method: 'post',
-                      data: { id: record.id, unlock: true },
-                    });
-                    message.success('已解锁');
-                    onClose();
-                    onSaved();
-                  } catch (e: any) {
-                    message.error('解锁失败：' + (e?.message || ''));
-                  }
-                }}
-                okText="解锁"
-                cancelText="取消"
-              >
-                <Button danger size="small">解锁此记录</Button>
-              </Popconfirm>
-            )}
-          </div>
-          {/* 右侧：重算开关 + 取消 + 保存 */}
-          <Space>
-            <Tooltip title="开启后，保存调整的同时自动重排其他未锁定订单">
-              <Space size={4}>
-                <Text type="secondary" style={{ fontSize: 12 }}>保存后重算</Text>
-                <Switch
-                  size="small"
-                  checked={autoReSchedule}
-                  onChange={setAutoReSchedule}
-                />
-              </Space>
-            </Tooltip>
-            <Button onClick={onClose}>取消</Button>
-            <Button type="primary" loading={loading} onClick={handleSave}>保存调整</Button>
-          </Space>
-        </div>
-      }
-    >
-      <div style={{ background: '#f5f7fa', borderRadius: 8, padding: '12px 16px', marginBottom: 20, border: '1px solid #e8edf2' }}>
-        <Space size="large" wrap>
-          <div><Text type="secondary" style={{ fontSize: 11 }}>生产单号</Text><br /><Text strong>{record.prodId}</Text></div>
-          <div><Text type="secondary" style={{ fontSize: 11 }}>物料</Text><br /><Text>{record.itemId}</Text></div>
-          <div><Text type="secondary" style={{ fontSize: 11 }}>数量</Text><br /><Text strong>{formatNum(record.totalQty)}</Text></div>
-          <div><Text type="secondary" style={{ fontSize: 11 }}>交期</Text><br /><Text type="warning" strong>{record.dlvDate ? dayjs(record.dlvDate).format('MM-DD') : '-'}</Text></div>
-          <div><Text type="secondary" style={{ fontSize: 11 }}>当前产线</Text><br /><Tag color="cyan">{record.chosenLine}</Tag></div>
-        </Space>
-      </div>
-
-      <Form form={form} layout="vertical" size="small">
-        <Divider orientation="left" style={{ fontSize: 13, marginTop: 0 }}>基本信息调整</Divider>
-        <Form.Item name="chosenLine" label="换产线">
-          <Select options={ESG_LINES.map(l => ({ value: l, label: l }))} placeholder="选择产线" style={{ width: 160 }} />
-        </Form.Item>
-        <Space>
-          <Form.Item name="startDate" label="开始日期" rules={[{ validator: (_: any, val: any) => {
-            const end = form.getFieldValue('finishDate');
-            if (val && end && val.isAfter(end)) return Promise.reject('开始日期不能晚于完成日期');
-            return Promise.resolve();
-          }}]}>
-            <DatePicker format="YYYY-MM-DD" style={{ width: 160 }} />
-          </Form.Item>
-          <Form.Item name="finishDate" label="完成日期" rules={[{ validator: (_: any, val: any) => {
-            const start = form.getFieldValue('startDate');
-            if (val && start && val.isBefore(start)) return Promise.reject('完成日期不能早于开始日期');
-            return Promise.resolve();
-          }}]}>
-            <DatePicker format="YYYY-MM-DD" style={{ width: 160 }} />
-          </Form.Item>
-        </Space>
-
-        <Divider orientation="left" style={{ fontSize: 13 }} orientationMargin={0}>
-          <Space size={8}>
-            <span>每日产量</span>
-            <Button type="dashed" size="small" style={{ fontSize: 12 }}
-              onClick={() => { setShowAddRow(true); setNewDateInput(null); setNewQtyInput(0); }}>
-              + 新增日期
-            </Button>
-            <Button type="text" size="small" style={{ fontSize: 12, color: '#8c8c8c', padding: '0 4px' }}
-              onClick={() => setSortDir(prev => prev === 'asc' ? 'desc' : 'asc')} title="切换日期排序方向">
-              {sortDir === 'asc' ? '日期 ↑' : '日期 ↓'}
-            </Button>
-          </Space>
-        </Divider>
-
-        <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 12px' }}>
-          {allDates.sort((a, b) => sortDir === 'asc' ? a.localeCompare(b) : b.localeCompare(a)).map(date => {
-            const isAdded = addedDates.has(date);
-            const origQty = isAdded ? 0 : Number((record.dailyPlan || {})[date] || 0);
-            const curQty = patchMap[date] ?? origQty;
-            const changed = !isAdded && curQty !== origQty;
-
-            const handleDelete = () => {
-              if (isAdded) {
-                setPatchMap(prev => { const n = { ...prev }; delete n[date]; return n; });
-                setAddedDates(prev => { const n = new Set(prev); n.delete(date); return n; });
-              } else {
-                setPatchMap(prev => ({ ...prev, [date]: 0 }));
-              }
-            };
-
-            return (
-              <div key={date} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '6px 0', borderBottom: '1px dashed #f5f5f5',
-                opacity: (!isAdded && curQty === 0 && origQty > 0) ? 0.4 : 1,
-              }}>
-                <Space size={6}>
-                  <Text style={{ fontSize: 13, width: 50 }}>{dayjs(date).format('MM-DD')}</Text>
-                  <Text type="secondary" style={{ fontSize: 11 }}>{dayjs(date).format('ddd')}</Text>
-                  {isAdded && <Tag color="orange" style={{ fontSize: 10, padding: '0 4px' }}>新增</Tag>}
-                  {changed && <Tag color="blue" style={{ fontSize: 10, padding: '0 4px' }}>已改</Tag>}
-                  {!isAdded && curQty === 0 && origQty > 0 && <Tag color="red" style={{ fontSize: 10, padding: '0 4px' }}>已删</Tag>}
-                </Space>
-                <Space size={4} align="center">
-                  <InputNumber size="small" min={0} step={100} value={curQty} style={{ width: 100 }}
-                    onChange={val => setPatchMap(prev => ({ ...prev, [date]: val ?? 0 }))} addonAfter="pcs" />
-                  <Tooltip title={isAdded ? '移除此行' : '将此日期产量清零（等同删除）'}>
-                    <Button type="text" size="small" danger style={{ padding: '0 4px' }} onClick={handleDelete}>×</Button>
-                  </Tooltip>
-                </Space>
-              </div>
-            );
-          })}
-
-          {showAddRow && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid #f0f0f0', marginTop: 4 }}>
-              <DatePicker size="small" format="YYYY-MM-DD" value={newDateInput} placeholder="选择日期" style={{ width: 130 }}
-                onChange={val => setNewDateInput(val)}
-                disabledDate={(d: any) => {
-                  const key = d?.format('YYYY-MM-DD');
-                  const existingKeys = new Set([...Object.keys(record.dailyPlan || {}), ...Array.from(addedDates)]);
-                  return existingKeys.has(key);
-                }} />
-              <InputNumber size="small" min={0} step={100} value={newQtyInput} style={{ width: 100 }}
-                onChange={val => setNewQtyInput(val ?? 0)} addonAfter="pcs" placeholder="产量" />
-              <Button type="primary" size="small" disabled={!newDateInput || newQtyInput <= 0}
-                onClick={() => {
-                  const dateStr = newDateInput.format('YYYY-MM-DD');
-                  setPatchMap(prev => ({ ...prev, [dateStr]: newQtyInput }));
-                  setAddedDates(prev => new Set([...prev, dateStr]));
-                  setNewDateInput(null); setNewQtyInput(0); setShowAddRow(false);
-                }}>确认</Button>
-              <Button size="small" onClick={() => { setNewDateInput(null); setNewQtyInput(0); setShowAddRow(false); }}>取消</Button>
-            </div>
-          )}
-
-          {allDates.length === 0 && !showAddRow && (
-            <div style={{ textAlign: 'center', padding: '16px 0', color: '#bfbfbf', fontSize: 12 }}>
-              暂无产量数据，点击「+ 新增日期」添加
-            </div>
-          )}
-        </div>
-
-        <Divider orientation="left" style={{ fontSize: 13 }}>调整备注</Divider>
-        <Form.Item name="adjustReason">
-          <Input.TextArea rows={3} placeholder="请输入调整原因（选填）" maxLength={200} showCount />
-        </Form.Item>
-        <Alert
-          type="warning" showIcon style={{ marginTop: 8 }}
-          message={
-            <span>
-              注意：本次调整将被<Text strong>锁定</Text>。点击"调整后重算"可在保留此锁定的前提下重排其余订单；
-              全量重排将覆盖所有调整。
-            </span>
-          }
-        />
-      </Form>
-    </Drawer>
-  );
-};
 
 // ============================================================================
 // 主组件：排产甘特图
@@ -386,16 +18,14 @@ interface SchedulingGanttProps {
 }
 
 const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
-  const [rawRecords, setRawRecords] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<'grouped' | 'flat'>('grouped');
+  const [rawRecords,     setRawRecords]     = useState<any[]>([]);
+  const [loading,        setLoading]        = useState(false);
+  const [viewMode,       setViewMode]       = useState<'grouped' | 'flat'>('grouped');
   const [factoryCalendar, setFactoryCalendar] = useState<Record<string, any>>({});
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerRecord, setDrawerRecord] = useState<any>(null);
-
-  // ── 调整后重算 ──────────────────────────────────────────────────────────
-  const [reScheduling, setReScheduling] = useState(false);
+  const [drawerOpen,     setDrawerOpen]     = useState(false);
+  const [drawerRecord,   setDrawerRecord]   = useState<any>(null);
+  const [reScheduling,   setReScheduling]   = useState(false);
 
   /** 已锁定条数（直接从 rawRecords 计算，无需额外请求）*/
   const adjustedCount = useMemo(
@@ -403,20 +33,10 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     [rawRecords],
   );
 
+  const openDrawer  = useCallback((record: any) => { setDrawerRecord(record); setDrawerOpen(true); }, []);
+  const closeDrawer = useCallback(() => { setDrawerOpen(false); setDrawerRecord(null); }, []);
 
-
-  const openDrawer = useCallback((record: any) => {
-    setDrawerRecord(record);
-    setDrawerOpen(true);
-  }, []);
-
-  const closeDrawer = useCallback(() => {
-    setDrawerOpen(false);
-    setDrawerRecord(null);
-  }, []);
-
-  // handleRemove 定义在 fetchScheduleData 之后（依赖它）
-
+  // ── 拉取排产数据 & 工厂日历 ───────────────────────────────────────────────
   const fetchScheduleData = useCallback(async () => {
     setLoading(true);
     try {
@@ -439,12 +59,12 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
           ? JSON.parse(record.dailyPlanDetail || '{}')
           : (record.dailyPlanDetail || {});
 
+        // 计算回退满产能力（用于甘特格高度比例）
         let maxBaseHours = 10;
         const hoursArray = Object.values(dailyPlanDetail).map((d: any) => Number(d.baseWorkHours) || 0);
         if (hoursArray.length > 0 && Math.max(...hoursArray) > 0) {
           maxBaseHours = Math.max(...hoursArray);
         }
-
         let fallbackStandardCapacity = (Number(record.uph) || 0) * maxBaseHours;
         if (fallbackStandardCapacity <= 0) {
           fallbackStandardCapacity = Math.max(1, ...Object.values(dailyPlan).map((v: any) => Number(v) || 0));
@@ -470,6 +90,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
 
       setRawRecords(processedRecords);
 
+      // 拉取工厂日历（用于甘特格休息日着色）
       if (minGlobalDate && maxGlobalDate) {
         const calResponse = await api.request({
           url: 'md_work_calendars:list',
@@ -484,7 +105,6 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
             }),
           },
         });
-
         const calRecords = calResponse?.data?.data || calResponse?.data || [];
         const calMap: Record<string, any> = {};
         calRecords.forEach((cal: any) => {
@@ -502,7 +122,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     }
   }, [api]);
 
-    /** 调整后重算处理函数 */
+  /** 调整后重算 */
   const handleReSchedule = useCallback(async () => {
     setReScheduling(true);
     try {
@@ -536,7 +156,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     return () => window.removeEventListener('scheduling:refresh', handler);
   }, [fetchScheduleData]);
 
-  // ── 表格数据 ──
+  // ── 表格数据（按产线树形 or 平铺）────────────────────────────────────────
   const tableData = useMemo(() => {
     if (viewMode === 'flat') return rawRecords;
 
@@ -549,7 +169,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
           isGroupHeader: true, totalQty: 0,
           dailyPlan: {} as Record<string, number>,
           dailyTotalTime: {} as Record<string, number>,
-          dailyBaseTime: {} as Record<string, number>,
+          dailyBaseTime:  {} as Record<string, number>,
           children: [], startDate: record.startDate, finishDate: record.finishDate,
         };
       }
@@ -557,7 +177,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
       group.children.push(record);
       group.totalQty += Number(record.totalQty || 0);
       if (dayjs(record.startDate).isBefore(dayjs(group.startDate))) group.startDate = record.startDate;
-      if (dayjs(record.finishDate).isAfter(dayjs(group.finishDate))) group.finishDate = record.finishDate;
+      if (dayjs(record.finishDate).isAfter(dayjs(group.finishDate)))  group.finishDate = record.finishDate;
 
       Object.entries(record.dailyPlan).forEach(([date, qty]) => {
         group.dailyPlan[date] = (group.dailyPlan[date] || 0) + Number(qty);
@@ -565,7 +185,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
         if (detail) {
           const tTime = (Number(detail.effectiveHours) || 0) + (Number(detail.overtimeHours) || 0) + (Number(detail.setupHours) || 0);
           group.dailyTotalTime[date] = (group.dailyTotalTime[date] || 0) + tTime;
-          group.dailyBaseTime[date] = Math.max(group.dailyBaseTime[date] || 0, Number(detail.baseWorkHours) || 10);
+          group.dailyBaseTime[date]  = Math.max(group.dailyBaseTime[date] || 0, Number(detail.baseWorkHours) || 10);
         }
       });
     });
@@ -577,35 +197,45 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     return Object.values(lineMap).sort((a: any, b: any) => a.chosenLine.localeCompare(b.chosenLine));
   }, [rawRecords, viewMode]);
 
-  // ── 动态日期列 ──
-  const dynamicDateColumns = useMemo(() => {
+  // ── 展开为平铺数组（供 DraggableGantt 使用）： group header + 它的 children 交替列出
+  const flatGroupedData = useMemo(() => {
+    const result: any[] = [];
+    (tableData as any[]).forEach((group: any) => {
+      result.push(group);
+      if (group.children) group.children.forEach((child: any) => result.push(child));
+    });
+    return result;
+  }, [tableData]);
+
+  // ── 全局日期轴（所有记录 startDate~finishDate 并集）──────────────────────
+  const globalDates = useMemo(() => {
     if (!rawRecords || rawRecords.length === 0) return [];
-
-    let minGlobalDate: any = null;
-    let maxGlobalDate: any = null;
-
+    let minDate: any = null, maxDate: any = null;
     rawRecords.forEach((r: any) => {
       if (!r.startDate || !r.finishDate) return;
-      const s = dayjs(r.startDate);
-      const f = dayjs(r.finishDate);
-      if (!minGlobalDate || s.isBefore(minGlobalDate)) minGlobalDate = s;
-      if (!maxGlobalDate || f.isAfter(maxGlobalDate)) maxGlobalDate = f;
+      const s = dayjs(r.startDate), f = dayjs(r.finishDate);
+      if (!minDate || s.isBefore(minDate)) minDate = s;
+      if (!maxDate || f.isAfter(maxDate))  maxDate  = f;
     });
-
-    if (!minGlobalDate || !maxGlobalDate) return [];
-
-    const globalDates: string[] = [];
-    let current = minGlobalDate.clone();
-    while (current.isBefore(maxGlobalDate) || current.isSame(maxGlobalDate, 'day')) {
-      globalDates.push(current.format('YYYY-MM-DD'));
-      current = current.add(1, 'day');
+    if (!minDate || !maxDate) return [];
+    const dates: string[] = [];
+    let cur = minDate.clone();
+    while (cur.isBefore(maxDate) || cur.isSame(maxDate, 'day')) {
+      dates.push(cur.format('YYYY-MM-DD'));
+      cur = cur.add(1, 'day');
     }
+    return dates;
+  }, [rawRecords]);
+
+  // ── 动态日期列 ─────────────────────────────────────────────────────────────
+  const dynamicDateColumns = useMemo(() => {
+    if (!globalDates || globalDates.length === 0) return [];
 
     const WEEKDAYS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
     return globalDates.map(date => {
-      const cellDate = dayjs(date);
-      const dayOfWeek = WEEKDAYS_EN[cellDate.day()];
+      const cellDate      = dayjs(date);
+      const dayOfWeek     = WEEKDAYS_EN[cellDate.day()];
       const isRestDayHeader = factoryCalendar[date]
         ? !factoryCalendar[date].isWorkday
         : (cellDate.day() === 0 || cellDate.day() === 6);
@@ -625,11 +255,11 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
         width: 48,
         onCell: () => ({ style: { padding: 0 } }),
         render: (val: any, record: any) => {
-          const startDate = dayjs(record.startDate).format('YYYY-MM-DD');
+          const startDate  = dayjs(record.startDate).format('YYYY-MM-DD');
           const finishDate = dayjs(record.finishDate).format('YYYY-MM-DD');
-          const inRange = date >= startDate && date <= finishDate;
-          const hasData = val !== undefined && val !== null;
-          const qty = Number(val) || 0;
+          const inRange    = date >= startDate && date <= finishDate;
+          const hasData    = val !== undefined && val !== null;
+          const qty        = Number(val) || 0;
 
           let isRestDayBackground = false;
           if (factoryCalendar[date]) {
@@ -644,11 +274,14 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
             boxSizing: 'border-box', paddingBottom: '2px',
           };
 
+          // 非生产周期：斜纹底
           if (!inRange) {
             return (
-              <div style={{ ...baseStyle, backgroundColor: '#f5f5f5',
+              <div style={{
+                ...baseStyle, backgroundColor: '#f5f5f5',
                 backgroundImage: 'repeating-linear-gradient(-45deg, transparent, transparent 4px, rgba(0,0,0,0.04) 4px, rgba(0,0,0,0.04) 8px)',
-                alignItems: 'center' }} title="非生产周期">
+                alignItems: 'center',
+              }} title="非生产周期">
                 <span style={{ color: 'rgba(0,0,0,0.15)', fontSize: '12px' }}>-</span>
               </div>
             );
@@ -669,10 +302,11 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
               </div>
             );
           } else {
+            // 计算产能使用比例（用于甘特条高度）
             let capacityRatio = 0;
             if (record.isGroupHeader) {
               const tTime = record.dailyTotalTime?.[date] || 0;
-              const bTime = record.dailyBaseTime?.[date] || 10;
+              const bTime = record.dailyBaseTime?.[date]  || 10;
               capacityRatio = tTime > 0 ? tTime / bTime : qty / (record.maxQty || 1);
             } else {
               const detail = record.dailyPlanDetail?.[date];
@@ -685,35 +319,42 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
               }
             }
 
-            const isOverload = capacityRatio > 1.05;
+            const isOverload    = capacityRatio > 1.05;
             const heightPercent = Math.min(Math.max(capacityRatio * 100, 10), 100);
             let barColor = record.isGroupHeader ? '#52c41a' : '#1677ff';
             if (isOverload) barColor = '#fa8c16';
 
             CellContent = (
               <div style={{ ...baseStyle, ...restStyle, alignItems: 'flex-end' }}>
-                <div style={{ position: 'absolute', bottom: 0, left: 0, width: '100%',
+                <div style={{
+                  position: 'absolute', bottom: 0, left: 0, width: '100%',
                   height: `${heightPercent}%`, backgroundColor: barColor,
-                  opacity: isOverload ? 0.4 : 0.25, transition: 'all 0.3s ease' }} />
-                <div style={{ position: 'relative', zIndex: 1, fontSize: '11px', fontWeight: 'bold', color: barColor,
+                  opacity: isOverload ? 0.4 : 0.25, transition: 'all 0.3s ease',
+                }} />
+                <div style={{
+                  position: 'relative', zIndex: 1, fontSize: '11px', fontWeight: 'bold', color: barColor,
                   borderBottom: record.isGroupHeader ? 'none' : '1px dashed #91caff',
-                  cursor: record.isGroupHeader ? 'default' : 'pointer' }}>
+                  cursor: record.isGroupHeader ? 'default' : 'pointer',
+                }}>
                   {formatNum(qty)}
                 </div>
               </div>
             );
           }
 
+          // 分组行无 Popover
           if (record.isGroupHeader) return CellContent;
 
           const dayDetail = record.dailyPlanDetail ? record.dailyPlanDetail[date] : null;
-
           return (
             <Popover
               content={<CapacityDetailCard date={date} detail={dayDetail} isGlobalRest={isRestDayBackground} />}
               title={null} trigger="hover" placement="left" mouseEnterDelay={0.3}
-              overlayInnerStyle={{ padding: '16px 20px', borderRadius: '12px',
-                boxShadow: '0 6px 16px -8px rgba(0,0,0,0.08), 0 9px 28px 0 rgba(0,0,0,0.05), 0 12px 48px 16px rgba(0,0,0,0.03)' }}>
+              overlayInnerStyle={{
+                padding: '16px 20px', borderRadius: '12px',
+                boxShadow: '0 6px 16px -8px rgba(0,0,0,0.08), 0 9px 28px 0 rgba(0,0,0,0.05), 0 12px 48px 16px rgba(0,0,0,0.03)',
+              }}
+            >
               {CellContent}
             </Popover>
           );
@@ -722,7 +363,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     });
   }, [rawRecords, factoryCalendar]);
 
-  // ── 基础列 ──
+  // ── 固定基础列 ─────────────────────────────────────────────────────────────
   const baseColumns = [
     {
       title: '生产单号 / 产线汇总', dataIndex: 'prodId', key: 'prodId', fixed: 'left' as const, width: 200,
@@ -739,10 +380,8 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
                 title={
                   <div style={{ fontSize: 12 }}>
                     {record.adjustReason && <div>备注：{record.adjustReason}</div>}
-                    {record.pinnedBy && <div>调整人：{record.pinnedBy}</div>}
-                    {record.adjustedAt && (
-                      <div>时间：{new Date(record.adjustedAt).toLocaleString('zh-CN')}</div>
-                    )}
+                    {record.pinnedBy     && <div>调整人：{record.pinnedBy}</div>}
+                    {record.adjustedAt   && <div>时间：{new Date(record.adjustedAt).toLocaleString('zh-CN')}</div>}
                   </div>
                 }
               >
@@ -750,8 +389,11 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
               </Tooltip>
             )}
             <Tooltip title="调整此排产结果">
-              <Button type="link" size="small" style={{ padding: '0 2px', color: '#1677ff', fontSize: 14 }}
-                onClick={(e) => { e.stopPropagation(); openDrawer(record); }}>✎</Button>
+              <Button
+                type="link" size="small"
+                style={{ padding: '0 2px', color: '#1677ff', fontSize: 14 }}
+                onClick={(e) => { e.stopPropagation(); openDrawer(record); }}
+              >✎</Button>
             </Tooltip>
           </Space>
         );
@@ -759,23 +401,28 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     },
     {
       title: '交期', dataIndex: 'dlvDate', key: 'dlvDate', fixed: 'left' as const, width: 90,
-      render: (val: any, record: any) => record.isGroupHeader ? '-' : (val ? <Text strong type="warning">{dayjs(val).format('MM-DD')}</Text> : '-'),
+      render: (val: any, record: any) =>
+        record.isGroupHeader ? '-' : (val ? <Text strong type="warning">{dayjs(val).format('MM-DD')}</Text> : '-'),
     },
     {
       title: '物料', dataIndex: 'itemId', key: 'itemId', fixed: 'left' as const, width: 120,
-      render: (val: any, record: any) => record.isGroupHeader ? '-' : <Text style={{ fontSize: '12px' }}>{val}</Text>,
+      render: (val: any, record: any) =>
+        record.isGroupHeader ? '-' : <Text style={{ fontSize: '12px' }}>{val}</Text>,
     },
     {
       title: '产线', dataIndex: 'chosenLine', key: 'chosenLine', fixed: 'left' as const, width: 70,
-      render: (text: string, record: any) => record.isGroupHeader ? null : <Tag color="cyan">{text}</Tag>,
+      render: (text: string, record: any) =>
+        record.isGroupHeader ? null : <Tag color="cyan">{text}</Tag>,
     },
     {
       title: 'UPH', dataIndex: 'uph', key: 'uph', fixed: 'left' as const, width: 70,
-      render: (val: any, record: any) => (record.isGroupHeader || !val) ? '-' : <Text type="secondary">{formatNum(val, 1)}</Text>,
+      render: (val: any, record: any) =>
+        (record.isGroupHeader || !val) ? '-' : <Text type="secondary">{formatNum(val, 1)}</Text>,
     },
     {
       title: '人力', dataIndex: 'headcount', key: 'headcount', fixed: 'left' as const, width: 60,
-      render: (val: any, record: any) => (record.isGroupHeader || !val) ? '-' : <Text type="secondary">{val}</Text>,
+      render: (val: any, record: any) =>
+        (record.isGroupHeader || !val) ? '-' : <Text type="secondary">{val}</Text>,
     },
     {
       title: '总排量', dataIndex: 'totalQty', key: 'totalQty', fixed: 'left' as const, align: 'right' as const, width: 80,
@@ -787,30 +434,32 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
 
   const columns = [...baseColumns, ...dynamicDateColumns];
 
+  // ── 渲染 ───────────────────────────────────────────────────────────────────
   return (
     <div style={{ padding: '24px', backgroundColor: '#fff', borderRadius: '8px' }}>
+      {/* 工具栏 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <Space size="large">
           <Title level={4} style={{ margin: 0 }}>车间排产动态矩阵 (Gantt)</Title>
           <Radio.Group value={viewMode} onChange={(e) => setViewMode(e.target.value)} buttonStyle="solid">
             <Radio.Button value="flat">按订单明细</Radio.Button>
-            <Radio.Button value="grouped">按产线树形排期</Radio.Button>
+            <Radio.Button value="grouped">按产线排期（可拖拽）</Radio.Button>
           </Radio.Group>
         </Space>
+
         <Space wrap>
           <Text type="secondary" style={{ fontSize: '12px' }}>
-            共计 {rawRecords.length} 条单据 | 日期跨度: {dynamicDateColumns.length} 天
+            共计 {rawRecords.length} 条单据 | 日期跨度: {globalDates.length} 天
             {adjustedCount > 0 && (
               <> | <Tag color="orange" style={{ fontSize: 10 }}>✎ 已锁定 {adjustedCount} 条</Tag></>
             )}
           </Text>
 
-          {/* 调整后重算按钮（仅有锁定记录时显示）*/}
+          {/* 调整后重算（仅有锁定记录时显示）*/}
           {adjustedCount > 0 && (
             <Tooltip title={`将保留 ${adjustedCount} 条已锁定记录，对其余订单重新排产`}>
               <Button
-                onClick={handleReSchedule}
-                loading={reScheduling}
+                onClick={handleReSchedule} loading={reScheduling}
                 style={{ borderColor: '#fa8c16', color: '#fa8c16' }}
               >
                 调整后重算（{adjustedCount} 锁）
@@ -838,8 +487,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
                   message.error('全量重排失败：' + (e?.message || ''));
                 }
               }}
-              okText="确定解锁全量重排"
-              cancelText="取消"
+              okText="确定解锁全量重排" cancelText="取消"
               okButtonProps={{ danger: true }}
             >
               <Button danger size="small">解锁全部并重排</Button>
@@ -850,22 +498,46 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
         </Space>
       </div>
 
-      <Table
-        loading={loading} columns={columns} dataSource={tableData}
-        rowKey="id" size="small" bordered
-        scroll={{ x: 'max-content', y: 650 }}
-        pagination={viewMode === 'flat' ? { pageSize: 50 } : false}
-        defaultExpandAllRows={true}
-        rowClassName={(record: any) => record.isManualAdjusted ? 'row-adjusted' : ''}
-      />
-
-      <AdjustDrawer
-        open={drawerOpen}
-        record={drawerRecord}
-        onClose={closeDrawer}
-        onSaved={fetchScheduleData}
-        api={api}
-      />
+      {/* 拖拽树形视图（grouped）vs 订单明细表格（flat）*/}
+      {viewMode === 'grouped' ? (
+        <>
+          <DraggableGantt
+            records={flatGroupedData}
+            globalDates={globalDates}
+            factoryCalendar={factoryCalendar || {}}
+            api={api}
+            onSaved={fetchScheduleData}
+            onClickRecord={openDrawer}
+          />
+          {/* 调整弹窗（点击条形时弹出） */}
+          <AdjustDrawer
+            open={drawerOpen}
+            record={drawerRecord}
+            onClose={closeDrawer}
+            onSaved={fetchScheduleData}
+            api={api}
+          />
+        </>
+      ) : (
+        <>
+          {/* 订单明细表格 */}
+          <Table
+            loading={loading} columns={columns} dataSource={tableData}
+            rowKey="id" size="small" bordered
+            scroll={{ x: 'max-content', y: 650 }}
+            pagination={{ pageSize: 50 }}
+            rowClassName={(record: any) => record.isManualAdjusted ? 'row-adjusted' : ''}
+          />
+          {/* 调整弹窗 */}
+          <AdjustDrawer
+            open={drawerOpen}
+            record={drawerRecord}
+            onClose={closeDrawer}
+            onSaved={fetchScheduleData}
+            api={api}
+          />
+        </>
+      )}
     </div>
   );
 };

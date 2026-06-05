@@ -7,6 +7,7 @@ import { lastRun } from './actions/lastRun';
 import { listRuns } from './actions/listRuns';
 import { removeResults } from './actions/removeResults';
 import { reScheduleAfterAdjust } from './actions/reScheduleAfterAdjust';
+import { getWorkdays } from './actions/getWorkdays';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -66,6 +67,10 @@ export class PluginSchedulingServer extends Plugin {
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "runType" varchar(20) DEFAULT 'FULL'`,
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "pinnedCount" integer DEFAULT 0`,
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "reScheduledCount" integer DEFAULT 0`,
+      // NocoBase ORM 对所有 Collection 自动引用 createdAt/updatedAt，
+      // 此表由 raw SQL 创建时缺少这两列，导致 list API 报 "Invalid SQL column or table reference"
+      `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`,
+      `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`,
     ];
     for (const sql of ddlStatements) {
       try {
@@ -88,6 +93,7 @@ export class PluginSchedulingServer extends Plugin {
         listRuns,              // 排产历史列表（分页，raw SQL）
         removeResults,         // 撤销指定订单的排产结果
         reScheduleAfterAdjust, // 调整后重计算（保留锁定记录，仅重排未锁定订单）
+        workdays: getWorkdays,  // 查询工作日历（前端按日期自动计算每日产量）
       },
     });
 
@@ -95,7 +101,7 @@ export class PluginSchedulingServer extends Plugin {
     this.app.acl.allow(
       'scheduling',
       ['run', 'validate', 'adjustResult', 'previewOrders',
-       'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust'],
+       'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust', 'workdays'],
       'loggedIn',
     );
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');
@@ -103,6 +109,8 @@ export class PluginSchedulingServer extends Plugin {
     this.app.acl.allow('schedule_exceptions_v2', ['list', 'get'], 'loggedIn');
     // 订单选择 UI 需要读取订单列表
     this.app.acl.allow('dn_production_order_ds', ['list', 'get'], 'loggedIn');
+    // 「按日期自动计算」功能需要读取工作日历
+    this.app.acl.allow('md_work_calendars', ['list', 'get'], 'loggedIn');
   }
 }
 

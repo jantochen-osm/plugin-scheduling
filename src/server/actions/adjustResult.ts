@@ -197,6 +197,96 @@ export async function adjustResult(ctx: Context) {
     if (newDailyPlan !== null) {
       setClauses.push('"dailyPlan" = :dailyPlan::json');
       replacements.dailyPlan = JSON.stringify(newDailyPlan);
+
+      // ── 同步重算 dailyPlanDetail ──────────────────────────────────────────
+      // adjustResult 修改了 dailyPlan，必须同步重建 dailyPlanDetail，
+      // 否则甘特图「每日明细」tooltip 会显示过时的旧数据。
+      try {
+        // 从原记录读取排产参数（uph/headcount 在调整时不变）
+        const routeUph      = Number(original.uph)          || 0;
+        const headcount     = Number(original.headcount)     || 1;
+        const effectiveUph  = routeUph;   // 调整时不改变人数，effectiveUph = routeUph
+        const perPersonUph  = headcount > 0 ? routeUph / headcount : 0;
+
+        // 从 md_work_calendars 批量查询日历信息（baseWorkHours / dayType）
+        const planDates = Object.keys(newDailyPlan);
+        const calRows: any[] = [];
+        if (planDates.length > 0) {
+          const [rows] = await ctx.db.sequelize.query(
+            `SELECT "calendarDate"::text AS d, "workHours", "isWorkday", "isSchedulable"
+               FROM md_work_calendars
+              WHERE "calendarDate"::text = ANY(ARRAY[:dates])`,
+            { replacements: { dates: planDates } },
+          ) as any;
+          calRows.push(...(rows as any[]));
+        }
+        const calMap = new Map<string, { workHours: number; isWorkday: boolean; isSchedulable: boolean }>();
+        for (const r of calRows) {
+          calMap.set(r.d, {
+            workHours:    Number(r.workHours)    || 10,
+            isWorkday:    Boolean(r.isWorkday),
+            isSchedulable: Boolean(r.isSchedulable),
+          });
+        }
+
+        // 读原始 dailyPlanDetail（保留换线时间等首日信息）
+        const origDetail: Record<string, any> =
+          typeof original.dailyPlanDetail === 'string'
+            ? JSON.parse(original.dailyPlanDetail || '{}')
+            : (original.dailyPlanDetail ?? {});
+
+        // 重建 dailyPlanDetail（每日明细）
+        const newDetail: Record<string, any> = {};
+        const sortedPlanDates = planDates.sort();
+        const firstDate = sortedPlanDates[0];
+
+        for (const d of sortedPlanDates) {
+          const qty          = newDailyPlan[d] || 0;
+          const cal          = calMap.get(d);
+          const baseWorkHours = cal?.workHours ?? 10;
+
+          // setupHours：仅首日可能有换线时间，从原明细保留（调整时不重新评估换线）
+          const setupHours   = d === firstDate ? (origDetail[firstDate]?.setupHours ?? 0) : 0;
+
+          // 标准产量（不含加班）：简化处理，手动调整时不再区分加班/非加班
+          const standardQty  = qty;
+          const overtimeQty  = 0;
+
+          const effectiveHours = effectiveUph > 0
+            ? Math.round((standardQty / effectiveUph + setupHours) * 100) / 100
+            : 0;
+
+          // dayType / dayLabel
+          let dayType  = 'NORMAL';
+          let dayLabel = '';
+          if (!cal?.isSchedulable)  { dayType = 'NON_WORKDAY'; dayLabel = '非工作日'; }
+          else if (!cal?.isWorkday) { dayType = 'SPECIAL_WORKDAY'; dayLabel = '补班'; }
+
+          newDetail[d] = {
+            totalQty:     qty,
+            standardQty,
+            overtimeQty,
+            baseWorkHours,
+            overtimeHours: 0,
+            setupHours,
+            effectiveHours,
+            uph:           routeUph,
+            perPersonUph:  Math.round(perPersonUph * 100) / 100,
+            headcount,
+            actualHeadcount: headcount,
+            effectiveUph:  Math.round(effectiveUph * 100) / 100,
+            dayType,
+            dayLabel,
+          };
+        }
+
+        setClauses.push('"dailyPlanDetail" = :dailyPlanDetail::json');
+        replacements.dailyPlanDetail = JSON.stringify(newDetail);
+        ctx.logger?.info?.(`[AdjustResult] id=${id} dailyPlanDetail rebuilt for ${sortedPlanDates.length} dates`);
+      } catch (detailErr: any) {
+        // dailyPlanDetail 重算失败不阻塞主流程，记录警告继续
+        ctx.logger?.warn?.(`[AdjustResult] id=${id} dailyPlanDetail rebuild failed: ${detailErr?.message ?? detailErr}`);
+      }
     }
     if (adjustReason !== undefined) {
       setClauses.push('"adjustReason" = :adjustReason');
