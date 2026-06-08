@@ -26,12 +26,13 @@ export const CapacityDetailCard: React.FC<{
 
   const getDayTypeTag = (type: string) => {
     switch (type) {
-      case 'WORKDAY':     return <Tag color="green"   style={{ margin: 0, border: 'none' }}>工作日</Tag>;
-      case 'OVERTIME':    return <Tag color="orange"  style={{ margin: 0, border: 'none' }}>加班日</Tag>;
-      case 'WEEKEND':     return <Tag color="default" style={{ margin: 0, border: 'none' }}>周末/假</Tag>;
-      case 'HOLIDAY':     return <Tag color="magenta" style={{ margin: 0, border: 'none' }}>法定节假日</Tag>;
-      case 'MAINTENANCE': return <Tag color="purple"  style={{ margin: 0, border: 'none' }}>设备保养</Tag>;
-      default:            return <Tag color="blue"    style={{ margin: 0, border: 'none' }}>{type || '未知'}</Tag>;
+      case 'WORKDAY':      return <Tag color="green"   style={{ margin: 0, border: 'none' }}>工作日</Tag>;
+      case 'OVERTIME':     return <Tag color="orange"  style={{ margin: 0, border: 'none' }}>加班日</Tag>;
+      case 'EXTRA_WORKDAY':return <Tag color="cyan"    style={{ margin: 0, border: 'none' }}>补班日</Tag>;
+      case 'WEEKEND':      return <Tag color="default" style={{ margin: 0, border: 'none' }}>周末/假</Tag>;
+      case 'MAINTENANCE':  return <Tag color="purple"  style={{ margin: 0, border: 'none' }}>设备保养</Tag>;
+      case 'CHANGEOVER':   return <Tag color="blue"    style={{ margin: 0, border: 'none' }}>产品换线</Tag>;
+      default:             return <Tag color="default" style={{ margin: 0, border: 'none' }}>{type || '未知'}</Tag>;
     }
   };
 

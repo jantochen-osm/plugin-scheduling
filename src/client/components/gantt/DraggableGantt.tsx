@@ -81,6 +81,38 @@ async function calcGreedyFill(
     return null;
   }
 
+  // ── 查同产线其他锁定订单已占产能 ────────────────────────────────────────
+  const usedByOthers: Record<string, number> = {};
+  if (record.chosenLine) {
+    try {
+      const lockedRes = await api.request({
+        url: 'schedule_results_v2:list',
+        method: 'get',
+        params: {
+          paginate: false, pageSize: 500,
+          fields: 'dailyPlan',
+          filter: JSON.stringify({
+            $and: [
+              { chosenLine:       { $eq: record.chosenLine } },
+              { isManualAdjusted: { $eq: true              } },
+              { id:               { $ne: record.id         } },
+            ],
+          }),
+        },
+      });
+      const otherLocked: any[] = lockedRes?.data?.data || [];
+      for (const r of otherLocked) {
+        const plan: Record<string, number> =
+          typeof r.dailyPlan === 'string' ? JSON.parse(r.dailyPlan || '{}') : (r.dailyPlan || {});
+        for (const [date, qty] of Object.entries(plan)) {
+          usedByOthers[date] = (usedByOthers[date] || 0) + Number(qty);
+        }
+      }
+    } catch (_) {
+      // 查询失败则忽略，退化为不考虑他人占用
+    }
+  }
+
   const newDailyPlan: Record<string, number> = {};
   let remaining = totalQty;
 
@@ -96,12 +128,14 @@ async function calcGreedyFill(
     });
   } else {
     for (let i = 0; i < workdays.length; i++) {
-      const d        = workdays[i];
-      const isLast   = i === workdays.length - 1;
-      const dailyCap = Math.floor(uph * (workHoursMap[d] || 10));
+      const d            = workdays[i];
+      const isLast       = i === workdays.length - 1;
+      const fullCap      = Math.floor(uph * (workHoursMap[d] || 10));
+      const effectiveCap = Math.max(0, fullCap - (usedByOthers[d] || 0));
       if (remaining <= 0) break;
-      if (isLast || remaining <= dailyCap) { newDailyPlan[d] = remaining; remaining = 0; }
-      else { newDailyPlan[d] = dailyCap; remaining -= dailyCap; }
+      if (effectiveCap === 0) continue;                             // 产能被同产线锁定订单占满，跳过
+      if (isLast || remaining <= effectiveCap) { newDailyPlan[d] = remaining; remaining = 0; }
+      else { newDailyPlan[d] = effectiveCap; remaining -= effectiveCap; }
     }
   }
 
@@ -301,7 +335,7 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                     {record.itemId}
                   </Text>
                   {record.dlvDate && (
-                    <Text type="warning" style={{ fontSize: 10 }}>
+                    <Text type="warning" style={{ fontSize: 10 }}> 82.53，
                       🚚{dayjs(record.dlvDate).format('MM/DD')}
                     </Text>
                   )}

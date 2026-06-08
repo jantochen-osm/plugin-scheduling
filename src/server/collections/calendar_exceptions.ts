@@ -16,7 +16,7 @@ export default defineCollection({
       type: 'string',
       name: 'exceptionType',
       title: '异常类型',
-      // HOLIDAY, MAINTENANCE, CHANGEOVER
+      // MAINTENANCE（设备保养）/ CHANGEOVER（换线）/ EXTRA_WORKDAY（补班日）
     },
     {
       type: 'json',

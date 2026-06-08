@@ -25,10 +25,10 @@ export interface CustomerLineResult {
 
 export interface CalendarException {
   exceptionDate: string; // 'YYYY-MM-DD'
-  exceptionType: 'HOLIDAY' | 'MAINTENANCE' | 'CHANGEOVER';
+  exceptionType: 'MAINTENANCE' | 'CHANGEOVER' | 'EXTRA_WORKDAY';
   affectedLines: string[] | null; // null = 全线
-  workHours: number; // 0 = 全线停工
-  setupTime: number; // 换线耗时（分钟）
+  workHours: number; // MAINTENANCE: 保养后剩余工时；EXTRA_WORKDAY: 补班日可用工时
+  setupTime: number; // 换线耗时（分钟），CHANGEOVER 专用
   remarks?: string;
 }
 

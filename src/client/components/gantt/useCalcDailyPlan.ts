@@ -109,6 +109,38 @@ export const useCalcDailyPlan = ({
       return;
     }
 
+    // ── 查同产线其他锁定订单已占产能 ────────────────────────────────────────
+    const usedByOthers: Record<string, number> = {};
+    if (record.chosenLine) {
+      try {
+        const lockedRes = await api.request({
+          url: 'schedule_results_v2:list',
+          method: 'get',
+          params: {
+            paginate: false, pageSize: 500,
+            fields: 'dailyPlan',
+            filter: JSON.stringify({
+              $and: [
+                { chosenLine:       { $eq: record.chosenLine } },
+                { isManualAdjusted: { $eq: true              } },
+                { id:               { $ne: record.id         } },
+              ],
+            }),
+          },
+        });
+        const otherLocked: any[] = lockedRes?.data?.data || [];
+        for (const r of otherLocked) {
+          const plan: Record<string, number> =
+            typeof r.dailyPlan === 'string' ? JSON.parse(r.dailyPlan || '{}') : (r.dailyPlan || {});
+          for (const [date, qty] of Object.entries(plan)) {
+            usedByOthers[date] = (usedByOthers[date] || 0) + Number(qty);
+          }
+        }
+      } catch (_) {
+        // 查询失败则忽略，退化为不考虑他人占用
+      }
+    }
+
     // ── 贪心填充（正向 or 反向）────────────────────────────────────────────
     // 场景 C 倒序：确保 finishDate 一定有产量，startDate 为余量日
     const fillDays = mode === 'onlyFinish' ? [...workdays].reverse() : workdays;
@@ -132,20 +164,20 @@ export const useCalcDailyPlan = ({
       message.warning('⚠️ 该订单无 UPH 数据，已按工时比例均摊');
     } else {
       for (let i = 0; i < fillDays.length; i++) {
-        const d = fillDays[i];
-        const isLast   = i === fillDays.length - 1;
-        const dailyCap = Math.floor(uph * (workHoursMap[d] || 10));
+        const d            = fillDays[i];
+        const isLast       = i === fillDays.length - 1;
+        const fullCap      = Math.floor(uph * (workHoursMap[d] || 10));
+        const effectiveCap = Math.max(0, fullCap - (usedByOthers[d] || 0));
 
         if (remaining <= 0) break;
+        if (effectiveCap === 0) continue;                           // 产能被同产线锁定订单占满，跳过
 
-        if (isLast || remaining <= dailyCap) {
-          // 最后一填充日 or 剩余量 ≤ 满产 → 全部放在此日（超出部分为加班）
+        if (isLast || remaining <= effectiveCap) {
           newPatch[d] = remaining;
           remaining = 0;
         } else {
-          // 排满
-          newPatch[d] = dailyCap;
-          remaining -= dailyCap;
+          newPatch[d] = effectiveCap;
+          remaining -= effectiveCap;
         }
       }
     }

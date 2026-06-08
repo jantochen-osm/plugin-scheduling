@@ -19,7 +19,7 @@ import { RuleEngine, CalendarException } from './RuleEngine';
 
 // ─── 日期详情 ───
 
-export type DayType = 'WORKDAY' | 'WEEKEND' | 'HOLIDAY' | 'MAINTENANCE' | 'CHANGEOVER' | 'IDLE';
+export type DayType = 'WORKDAY' | 'WEEKEND' | 'EXTRA_WORKDAY' | 'MAINTENANCE' | 'CHANGEOVER' | 'IDLE';
 
 export interface DayInfo {
   date: string;
@@ -244,9 +244,9 @@ export class CapacityPool {
   /** 异常类型中文标签 */
   private getExceptionLabel(type: string): string {
     switch (type) {
-      case 'HOLIDAY': return '假期';
-      case 'MAINTENANCE': return '设备保养';
-      case 'CHANGEOVER': return '产品换线';
+      case 'EXTRA_WORKDAY': return '补班日';
+      case 'MAINTENANCE':   return '设备保养';
+      case 'CHANGEOVER':    return '产品换线';
       default: return type;
     }
   }
@@ -296,16 +296,20 @@ export class CapacityPool {
     }
 
     switch (exception.exceptionType) {
-      case 'HOLIDAY':
-        return { availableHours: exception.workHours, exceptionType: 'HOLIDAY' };
+      case 'EXTRA_WORKDAY':
+        // 补班日：将基准日历中不可排产的日期（周末/假日）临时激活为可排产日
+        // workHours 字段填写当日可用工时（如 10）
+        return { availableHours: exception.workHours, exceptionType: 'EXTRA_WORKDAY' };
 
       case 'MAINTENANCE':
+        // 设备保养：在基准工时基础上减少，取两者较小值
         return {
           availableHours: Math.min(exception.workHours, baseHours),
           exceptionType: 'MAINTENANCE',
         };
 
       case 'CHANGEOVER':
+        // 换线：工时不变，仅标记类型（setupTime 由调度器另行消耗）
         return { availableHours: baseHours, exceptionType: 'CHANGEOVER' };
 
       default:
