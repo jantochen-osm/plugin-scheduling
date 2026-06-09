@@ -342,7 +342,8 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                 </div>
                 <Text type="secondary" style={{ fontSize: 10, marginTop: 1 }}>
                   {Number(record.totalQty || 0).toLocaleString()} pcs
-                  {record.uph > 0 && ` · UPH ${formatNum(record.uph, 1)}`}
+                  {record.uph > 0 && ` · UPH ${formatNum(record.uph, 1)}`} 
+                   · Labor {record.headcount || 'N/A'}
                 </Text>
               </div>
             );
@@ -604,9 +605,8 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                                 textAlign: 'center',
                                 fontSize: 8,
                                 lineHeight: '10px',
-                                color: isOT ? 'rgba(255,100,80,0.95)' : 'rgba(255,255,255,0.85)',
+                                color: '#fff',
                                 fontWeight: isOT ? 700 : 400,
-                                textShadow: '0 1px 2px rgba(0,0,0,0.45)',
                                 pointerEvents: 'none',
                                 whiteSpace: 'nowrap',
                                 overflow: 'hidden',

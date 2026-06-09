@@ -72,6 +72,9 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
   // ── 执行状态 ──────────────────────────────────────────────────────────
   const [running, setRunning] = useState(false);
 
+  // ── 开工日期（排产从该日期起排期）──────────────────────────────────────
+  const [schedStartDate, setSchedStartDate] = useState<any>(dayjs());  // 默认今日
+
   // ── 弹窗 ──────────────────────────────────────────────────────────────
   const [resultOpen, setResultOpen]         = useState(false);
   const [runResult, setRunResult]           = useState<any>(null);
@@ -146,6 +149,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
         method: 'post',
         data: {
           strategy: 'ESG',
+          startDate: schedStartDate?.format('YYYY-MM-DD'),
           ...(prodIds ? { prodIds } : {}),
         },
       });
@@ -165,7 +169,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
     } finally {
       setRunning(false);
     }
-  }, [api, selectedRowKeys, selectedCount, fetchLastRun]);
+  }, [api, selectedRowKeys, selectedCount, fetchLastRun, schedStartDate]);
 
   // ── 确认弹窗 → 执行 ───────────────────────────────────────────────────
   const handleRun = useCallback(() => {
@@ -175,6 +179,12 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       width: 500,
       content: (
         <Space direction="vertical" style={{ width: '100%', marginTop: 8 }} size={12}>
+          <Space size={6}>
+            <Text type="secondary">开工日期：</Text>
+            <Text strong style={{ color: '#1677ff' }}>
+              {schedStartDate?.format('YYYY-MM-DD') || '今日'}
+            </Text>
+          </Space>
           {isFullMode ? (
             <Text>未勾选订单，将拉取 <strong>全部 ESG 有效订单</strong> 执行排产。</Text>
           ) : (
@@ -199,7 +209,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       cancelText: '取消',
       onOk: doRun,
     });
-  }, [isFullMode, selectedCount, doRun]);
+  }, [isFullMode, selectedCount, schedStartDate, doRun]);
 
   // ── 表格列定义 ────────────────────────────────────────────────────────
   const columns = [
@@ -372,6 +382,17 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
             </Space>
 
             <Space size={8}>
+              <Space size={6}>
+                <Text style={{ fontSize: 13, whiteSpace: 'nowrap' }}>开工日期</Text>
+                <DatePicker
+                  size="small"
+                  format="YYYY-MM-DD"
+                  value={schedStartDate}
+                  onChange={(val) => setSchedStartDate(val || dayjs())}
+                  allowClear={false}
+                  style={{ width: 130 }}
+                />
+              </Space>
               <Button
                 type="primary"
                 danger={isFullMode}

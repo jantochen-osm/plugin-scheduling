@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Table, Tag, Typography, Space, message, Button, Radio,
-  Popover, Tooltip, Popconfirm,
+  Popover, Tooltip, Popconfirm, Alert,
 } from 'antd';
 import { dayjs, formatNum } from './gantt/utils';
 import { CapacityDetailCard } from './gantt/CapacityDetailCard';
@@ -15,13 +15,15 @@ const { Text, Title } = Typography;
 // ============================================================================
 interface SchedulingGanttProps {
   api: any;
+  runId?: string; // 不传 = 自动加载最新版本
 }
 
-const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
+const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
   const [rawRecords,     setRawRecords]     = useState<any[]>([]);
   const [loading,        setLoading]        = useState(false);
   const [viewMode,       setViewMode]       = useState<'grouped' | 'flat'>('grouped');
   const [factoryCalendar, setFactoryCalendar] = useState<Record<string, any>>({});
+  const [currentRunId,   setCurrentRunId]   = useState<string | undefined>(runId);
 
   const [drawerOpen,     setDrawerOpen]     = useState(false);
   const [drawerRecord,   setDrawerRecord]   = useState<any>(null);
@@ -40,10 +42,29 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
   const fetchScheduleData = useCallback(async () => {
     setLoading(true);
     try {
+      // 版本管理：确定有效 runId
+      let effectiveRunId = runId;
+      if (!effectiveRunId) {
+        // 未传入 runId（独立页面模式），查询最新版本
+        try {
+          const lastRunRes = await api.request({ url: 'scheduling:lastRun', method: 'get' });
+          effectiveRunId = lastRunRes?.data?.data?.data?.runId
+                        || lastRunRes?.data?.data?.runId
+                        || lastRunRes?.data?.runId;
+        } catch {
+          // lastRun 失败时不过滤，返回全量（兴容旧数据）
+        }
+      }
+      setCurrentRunId(effectiveRunId);
+
+      const filterParam = effectiveRunId
+        ? { filter: JSON.stringify({ runId: { $eq: effectiveRunId } }) }
+        : {};
+
       const response = await api.request({
         url: 'schedule_results_v2:list',
         method: 'get',
-        params: { paginate: false, pageSize: 1000, sort: 'startDate' },
+        params: { paginate: false, pageSize: 1000, sort: 'startDate', ...filterParam },
       });
 
       const records = response?.data?.data || response?.data || [];
@@ -129,7 +150,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
       const result = await api.request({
         url: 'scheduling:reScheduleAfterAdjust',
         method: 'post',
-        data: { strategy: 'ESG' },
+        data: { strategy: 'ESG', runId: currentRunId },
       });
       const data = result?.data;
       message.success(
@@ -141,7 +162,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
     } finally {
       setReScheduling(false);
     }
-  }, [api, fetchScheduleData]);
+  }, [api, currentRunId, fetchScheduleData]);
 
   // 初始加载
   useEffect(() => { fetchScheduleData(); }, []);
@@ -437,6 +458,21 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api }) => {
   // ── 渲染 ───────────────────────────────────────────────────────────────────
   return (
     <div style={{ padding: '24px', backgroundColor: '#fff', borderRadius: '8px' }}>
+      {/* 版本信息条（仅在从历史列表打开时显示） */}
+      {runId && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12, borderRadius: 6 }}
+          message={
+            <span style={{ fontSize: 12 }}>
+              当前查看版本：
+              <span style={{ fontFamily: 'monospace', marginLeft: 6, fontWeight: 600 }}>{currentRunId}</span>
+              <span style={{ color: '#8c8c8c', marginLeft: 12 }}>手工调整和重算均限定于此版本</span>
+            </span>
+          }
+        />
+      )}
       {/* 工具栏 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <Space size="large">

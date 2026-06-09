@@ -62,5 +62,27 @@ export default defineCollection({
       title: '异常分布',
       // 结构: { PAST_DLV_DATE: 5, MISSING_ROUTE: 2, ... }
     },
+    // ── 版本管理字段 ────────────────────────────────────────────────────
+    {
+      type: 'string',
+      name: 'strategy',
+      title: '排产策略',
+      // 'ESG' | 'EE' | 'ALL'
+      defaultValue: '',
+    },
+    {
+      type: 'string',
+      name: 'startDate',
+      title: '开工日期',
+      // YYYY-MM-DD，前端传入的排产起始日期
+      defaultValue: '',
+    },
+    {
+      type: 'string',
+      name: 'versionName',
+      title: '版本备注',
+      // 用户自定义标注，预留
+      defaultValue: '',
+    },
   ],
 });

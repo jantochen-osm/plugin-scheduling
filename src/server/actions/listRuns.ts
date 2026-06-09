@@ -18,7 +18,8 @@ export async function listRuns(ctx: Context) {
     `SELECT
        "runId", "runTime", status,
        "totalOrders", "validOrders", "scheduledCount", "exceptionCount",
-       "successRate", "runMode", "selectedProdIds", "exceptionBreakdown"
+       "successRate", "runMode", "selectedProdIds", "exceptionBreakdown",
+       strategy, "startDate", "versionName"
      FROM schedule_runs
      ORDER BY "runTime" DESC
      LIMIT :limit OFFSET :offset`,

@@ -8,6 +8,7 @@ import { listRuns } from './actions/listRuns';
 import { removeResults } from './actions/removeResults';
 import { reScheduleAfterAdjust } from './actions/reScheduleAfterAdjust';
 import { getWorkdays } from './actions/getWorkdays';
+import { deleteVersion } from './actions/deleteVersion';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -71,6 +72,10 @@ export class PluginSchedulingServer extends Plugin {
       // 此表由 raw SQL 创建时缺少这两列，导致 list API 报 "Invalid SQL column or table reference"
       `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`,
       `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`,
+      // ── 版本管理新增字段（strategy / startDate / versionName）─────────────
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS strategy VARCHAR(20) DEFAULT ''`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "startDate" VARCHAR(20) DEFAULT ''`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "versionName" VARCHAR(200) DEFAULT ''`,
     ];
     for (const sql of ddlStatements) {
       try {
@@ -94,6 +99,7 @@ export class PluginSchedulingServer extends Plugin {
         removeResults,         // 撤销指定订单的排产结果
         reScheduleAfterAdjust, // 调整后重计算（保留锁定记录，仅重排未锁定订单）
         workdays: getWorkdays,  // 查询工作日历（前端按日期自动计算每日产量）
+        deleteVersion,          // 删除指定版本的排产结果
       },
     });
 
@@ -101,7 +107,8 @@ export class PluginSchedulingServer extends Plugin {
     this.app.acl.allow(
       'scheduling',
       ['run', 'validate', 'adjustResult', 'previewOrders',
-       'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust', 'workdays'],
+       'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust', 'workdays',
+       'deleteVersion'],
       'loggedIn',
     );
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');

@@ -53,11 +53,21 @@ export async function scheduleAll(
     lineLastFinish?: Record<string, string>;
     lineLastItem?: Record<string, string>;
   },
+  /**
+   * 排产开工日期（YYYY-MM-DD）。
+   * 必须与 step5_initCapacityPool 使用的 poolStart 保持一致，
+   * 否则算法会尝试访问产能池未初始化的日期格。
+   * 不传时回退到 getTodayStr()（= MOCK_TODAY）。
+   */
+  scheduleStartDate?: string,
 ) {
   const results: any[]    = [];
   const exceptions: any[] = [];
   const sdm = new StageDependencyManager();
-  const today = getTodayStr();
+  // 排产起算日：优先使用传入的 scheduleStartDate，否则回退到 MOCK_TODAY
+  const today = (scheduleStartDate && /^\d{4}-\d{2}-\d{2}$/.test(scheduleStartDate))
+    ? scheduleStartDate
+    : getTodayStr();
   const cfg   = strategy.getConfig();
 
   // 从所有订单的 _stages 收集真实 stageSequence，注册到 SDM

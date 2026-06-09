@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Table, Tag, Typography, Space, Button, Card,
+  Table, Tag, Typography, Space, Button, Card, Drawer, Popconfirm, message,
 } from 'antd';
-import { ReloadOutlined, CheckCircleOutlined, WarningOutlined } from '@ant-design/icons';
+import { ReloadOutlined, CheckCircleOutlined, WarningOutlined, BarChartOutlined } from '@ant-design/icons';
 import * as _dayjs from 'dayjs';
 const dayjs: any = _dayjs;
 const { Text, Title } = Typography;
+import SchedulingGantt from './SchedulingGantt';
 
 // ============================================================================
 // 类型
@@ -20,7 +21,10 @@ interface RunRecord {
   exceptionCount: number;
   successRate: number;
   selectedProdIds: string | null;
-  exceptionBreakdown: any; // { summary: Record<string,number>, details: ExcDetail[] } | Record<string,number> | null
+  exceptionBreakdown: any;
+  strategy: string;       // 新增
+  startDate: string;      // 新增
+  versionName: string;    // 新增
 }
 
 interface ExcDetail {
@@ -73,6 +77,11 @@ const SchedulingRunHistory: React.FC<{ api: any }> = ({ api }) => {
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
 
+  // 版本管理 state
+  const [ganttOpen,       setGanttOpen]       = useState(false);
+  const [selectedRunId,   setSelectedRunId]   = useState<string | null>(null);
+  const [deletingRunId,   setDeletingRunId]   = useState<string | null>(null);
+
   const fetchHistory = useCallback(async (p = page, ps = pageSize) => {
     setLoading(true);
     try {
@@ -92,6 +101,24 @@ const SchedulingRunHistory: React.FC<{ api: any }> = ({ api }) => {
   }, [api, page, pageSize]);
 
   useEffect(() => { fetchHistory(); }, []);
+
+  // 删除指定版本
+  const handleDeleteVersion = useCallback(async (runId: string) => {
+    setDeletingRunId(runId);
+    try {
+      await api.request({
+        url: 'scheduling:deleteVersion',
+        method: 'post',
+        data: { runId },
+      });
+      message.success('已删除该版本排产结果');
+      fetchHistory(page, pageSize);
+    } catch (e: any) {
+      message.error('删除失败：' + (e?.message || '未知错误'));
+    } finally {
+      setDeletingRunId(null);
+    }
+  }, [api, fetchHistory, page, pageSize]);
 
   // ── 列定义 ──────────────────────────────────────────────────────────────
   const columns = [
@@ -156,6 +183,58 @@ const SchedulingRunHistory: React.FC<{ api: any }> = ({ api }) => {
       width: 75,
       align: 'right' as const,
       render: (v: number) => <Text type="secondary" style={{ fontSize: 12 }}>{v ?? '-'}</Text>,
+    },
+    {
+      title: '策略',
+      dataIndex: 'strategy',
+      key: 'strategy',
+      width: 70,
+      render: (v: string) => {
+        const colorMap: Record<string, string> = { ESG: 'cyan', EE: 'blue', ALL: 'green' };
+        return v ? <Tag color={colorMap[v] || 'default'} style={{ fontSize: 11 }}>{v}</Tag>
+                 : <Text type="secondary">-</Text>;
+      },
+    },
+    {
+      title: '开工日期',
+      dataIndex: 'startDate',
+      key: 'startDate',
+      width: 95,
+      render: (v: string) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+    // ── 版本管理操作列 ──────────────────────────────────────────────────────
+    {
+      title: '操作',
+      key: 'action',
+      width: 180,
+      fixed: 'right' as const,
+      render: (_: any, record: RunRecord) => (
+        <Space size={6}>
+          <Button
+            size="small"
+            type="primary"
+            ghost
+            icon={<BarChartOutlined />}
+            onClick={() => { setSelectedRunId(record.runId); setGanttOpen(true); }}
+          >
+            查看甘特图
+          </Button>
+          <Popconfirm
+            title="确认删除此版本排产结果？操作不可恢复"
+            onConfirm={() => handleDeleteVersion(record.runId)}
+            okText="删除" okButtonProps={{ danger: true }}
+            cancelText="取消"
+          >
+            <Button
+              size="small"
+              danger
+              loading={deletingRunId === record.runId}
+            >
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
     },
   ];
 
@@ -269,7 +348,7 @@ const SchedulingRunHistory: React.FC<{ api: any }> = ({ api }) => {
           <div>
             <Title level={4} style={{ margin: 0 }}>排产历史</Title>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              每次排产运行记录 · 点击行展开异常明细
+              每次排产运行记录 · 点击「查看甘特图」可查看并修改该版本排产，展开行可查异常明细
             </Text>
           </div>
           <Button
@@ -311,6 +390,30 @@ const SchedulingRunHistory: React.FC<{ api: any }> = ({ api }) => {
         </Card>
 
       </Space>
+
+      {/* 版本甘特图 Drawer */}
+      <Drawer
+        title={
+          <Space>
+            <span>排产甘特图</span>
+            {selectedRunId && (
+              <Tag color="blue" style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                {selectedRunId}
+              </Tag>
+            )}
+          </Space>
+        }
+        open={ganttOpen}
+        onClose={() => { setGanttOpen(false); setSelectedRunId(null); }}
+        width="95vw"
+        placement="right"
+        destroyOnClose
+        styles={{ body: { padding: 0 } }}
+      >
+        {selectedRunId && (
+          <SchedulingGantt api={api} runId={selectedRunId} />
+        )}
+      </Drawer>
     </div>
   );
 };

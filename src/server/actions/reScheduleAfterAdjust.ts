@@ -42,23 +42,31 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   const strategyParam: string = (body.strategy || '').toUpperCase();
   const dryRun: boolean = body.dryRun === true;
 
+  // ── 版本管理：runId 必填，所有操作均限定在此版本范围内 ─────────────────
+  const runId: string = body.runId;
+  if (!runId) {
+    ctx.status = 400;
+    ctx.body = { error: 'runId is required for reScheduleAfterAdjust' };
+    return;
+  }
+
   const ruleEngine = new RuleEngine(ctx);
 
   // ── 1. 读取锁定记录（isManualAdjusted=true）──────────────────────────
-  ctx.logger?.info?.('[ReSchedule] Step 1: Loading pinned results');
+  ctx.logger?.info?.(`[ReSchedule] Step 1: Loading pinned results for runId=${runId}`);
   let pinnedResults: any[] = [];
   try {
     const [rows] = await ctx.db.sequelize.query(
       `SELECT id, "prodId", "itemId", "chosenLine", "startDate", "finishDate",
               "uph", "headcount", "dailyPlan", "adjustReason", "isManualAdjusted"
          FROM schedule_results_v2
-        WHERE "isManualAdjusted" = true`,
+        WHERE "isManualAdjusted" = true
+          AND "runId" = :runId`,
+      { replacements: { runId } },
     ) as any;
-    // sequelize.query 返回 [rows, metadata]，rows 是结果数组
     pinnedResults = Array.isArray(rows) ? rows : [];
   } catch (e: any) {
     ctx.logger?.error?.('[ReSchedule] Load pinned failed: ' + (e?.message || e));
-    // 若查询失败（如表不存在），继续但当作无锁定记录处理
     pinnedResults = [];
   }
 
@@ -66,47 +74,33 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   const pinnedProdIds = new Set<string>(pinnedResults.map((r: any) => r.prodId).filter(Boolean));
   ctx.logger?.info?.(`[ReSchedule] Pinned records: ${pinnedResults.length} (prodIds: ${[...pinnedProdIds].join(', ')})`);
 
-  // ── 2. 删除旧记录（仅删当次策略覆盖产线的非锁定记录）────────────────────
-  // ⚠️ 重要：必须先确定策略，再按产线范围删除，避免将其他策略（如EE）的结果清空
-  // 策略确定逻辑与 step 4 保持一致
-  const strategiesForDelete: SchedulingStrategy[] = [];
-  if (!strategyParam || strategyParam === 'EE')  strategiesForDelete.push(new EEStrategy());
-  if (!strategyParam || strategyParam === 'ESG') strategiesForDelete.push(new ESGStrategy());
-
-  // 收集所有待删产线（各策略 fallbackLines 的并集）
-  const linesToDelete = new Set<string>();
-  for (const s of strategiesForDelete) {
-    s.getFallbackLines().forEach((l) => linesToDelete.add(l));
-  }
-
-  if (!dryRun && linesToDelete.size > 0) {
-    // ── 2a. 先记录当前产线范围内的所有产品 ID（DELETE 前读取）──────────
-    // 必须在 DELETE 之前执行，因为 DELETE 会删掉非锁定记录
-    const scopeLineList = [...linesToDelete].map((l) => `'${l}'`).join(', ');
+  // ── 2. 删除旧记录（仅删本版本 runId 内的非锁定记录）────────────────────
+  // 版本管理：按 runId 隔离，不再按产线范围全表删除
+  if (!dryRun) {
+    // 2a. 先读取本版本内所有 prodId（DELETE 前读取，DELETE 后无法再读）
     let currentScopeProdIds: string[] | undefined;
     try {
       const [scopeRows] = await ctx.db.sequelize.query(
-        `SELECT DISTINCT "prodId" FROM schedule_results_v2
-          WHERE "chosenLine" IN (${scopeLineList})`,
+        `SELECT DISTINCT "prodId" FROM schedule_results_v2 WHERE "runId" = :runId`,
+        { replacements: { runId } },
       ) as any;
       currentScopeProdIds = (scopeRows as any[]).map((r: any) => r.prodId).filter(Boolean);
-      ctx.logger?.info?.(`[ReSchedule] Step 2a: Current scope prodIds: ${currentScopeProdIds.length}`);
-      // 挂到函数级变量，Step 3 复用
+      ctx.logger?.info?.(`[ReSchedule] Step 2a: Scope prodIds in runId=${runId}: ${currentScopeProdIds.length}`);
       (reScheduleAfterAdjust as any)._currentScopeProdIds = currentScopeProdIds;
     } catch (e: any) {
-      ctx.logger?.warn?.('[ReSchedule] Step 2a: Scope query failed, will fall back to full fetch. ' + e?.message);
+      ctx.logger?.warn?.('[ReSchedule] Step 2a: Scope query failed: ' + e?.message);
       (reScheduleAfterAdjust as any)._currentScopeProdIds = undefined;
     }
 
-    // 构建 IN 子句
-    const lineList = scopeLineList;
+    // 2b. 删除本版本非锁定记录
     try {
       await ctx.db.sequelize.query(
         `DELETE FROM schedule_results_v2
-          WHERE ("isManualAdjusted" = false OR "isManualAdjusted" IS NULL)
-            AND "chosenLine" IN (${lineList})`,
+          WHERE "runId" = :runId
+            AND ("isManualAdjusted" = false OR "isManualAdjusted" IS NULL)`,
+        { replacements: { runId } },
       );
-      ctx.logger?.info?.(`[ReSchedule] Step 2: Deleted non-pinned results for lines: ${[...linesToDelete].join(', ')}`);
+      ctx.logger?.info?.(`[ReSchedule] Step 2b: Deleted non-pinned results for runId=${runId}`);
     } catch (e: any) {
       ctx.logger?.error?.('[ReSchedule][ERROR] Delete non-pinned: ' + (e?.message || e));
       throw e;
@@ -223,6 +217,7 @@ export async function reScheduleAfterAdjust(ctx: Context) {
       strategy,
       decisionMap,
       { lineLastFinish, lineLastItem },   // ← initialState：锁定记录产线状态
+      body.startDate || undefined,        // ← scheduleStartDate：与产能池起点对齐
     );
 
     allResults.push(...results);
@@ -232,7 +227,7 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   }
 
   // ── 6. 写入数据库（dryRun 时跳过）────────────────────────────────────
-  const runId = `READJ_${Date.now()}`;
+  // 版本管理：沿用传入的 runId，不生成新 runId
 
   if (!dryRun && allResults.length > 0) {
     try {
@@ -280,7 +275,7 @@ export async function reScheduleAfterAdjust(ctx: Context) {
     }
   }
 
-  // ── 7. 写入 schedule_runs（runType='READJUST'）────────────────────────
+  // ── 7. UPDATE schedule_runs 统计（不新建记录，在原版本记录上更新）────────
   if (!dryRun) {
     const excSummary: Record<string, number> = {};
     for (const e of allExc) {
@@ -302,35 +297,31 @@ export async function reScheduleAfterAdjust(ctx: Context) {
 
     try {
       await ctx.db.sequelize.query(
-        `INSERT INTO schedule_runs
-          ("runId", "runTime", status, "totalOrders", "validOrders", "scheduledCount", "exceptionCount",
-           "successRate", "lineUtilization", "exceptionBreakdown", "selectedProdIds", "runMode",
-           "runType", "pinnedCount", "reScheduledCount")
-         VALUES
-          (:runId, NOW(), :status, :totalOrders, :validOrders, :scheduledCount, :exceptionCount,
-           :successRate, :lineUtilization::json, :exceptionBreakdown::json,
-           NULL, 'READJUST',
-           'READJUST', :pinnedCount, :reScheduledCount)`,
+        `UPDATE schedule_runs
+            SET status             = :status,
+                "scheduledCount"   = :scheduledCount,
+                "exceptionCount"   = :exceptionCount,
+                "successRate"      = :successRate,
+                "lineUtilization"  = :lineUtilization::json,
+                "exceptionBreakdown" = :exceptionBreakdown::json,
+                "runTime"          = NOW()
+          WHERE "runId" = :runId`,
         {
           replacements: {
             runId,
-            status:              runStatus,
-            totalOrders:         allOrders.length,
-            validOrders:         nonPinnedOrders.length,
-            scheduledCount:      allResults.length,
-            exceptionCount:      allExc.length,
-            successRate:         allResults.length > 0 ? 100 : 0,
-            lineUtilization:     JSON.stringify(allLineUtil),
-            exceptionBreakdown:  JSON.stringify(exceptionBreakdown),
-            pinnedCount:         pinnedResults.length,
-            reScheduledCount:    allResults.length,
+            status:             runStatus,
+            scheduledCount:     allResults.length,
+            exceptionCount:     allExc.length,
+            successRate:        allResults.length > 0 ? 100 : 0,
+            lineUtilization:    JSON.stringify(allLineUtil),
+            exceptionBreakdown: JSON.stringify(exceptionBreakdown),
           },
         },
       );
-      ctx.logger?.info?.('[ReSchedule][DB] Inserted schedule_runs record');
+      ctx.logger?.info?.(`[ReSchedule][DB] Updated schedule_runs for runId=${runId}`);
     } catch (e: any) {
-      ctx.logger?.error?.('[ReSchedule][ERROR] Insert schedule_runs: ' + (e?.original?.message || e?.message || e));
-      // schedule_runs 写入失败不阻塞主流程，仅记录错误
+      ctx.logger?.error?.('[ReSchedule][ERROR] Update schedule_runs: ' + (e?.original?.message || e?.message || e));
+      // 不阻塞主流程
     }
   }
 

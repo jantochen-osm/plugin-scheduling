@@ -170,10 +170,11 @@ export async function step5_initCapacityPool(
   ctx: Context,
   ruleEngine: RuleEngine,
   lineCodes: string[],
+  startDate?: string,   // 可选：排产开工日期；不传则使用 getTodayStr()（MOCK_TODAY 或系统今日）
 ): Promise<CapacityPool> {
   const pool = new CapacityPool(ruleEngine, SCHEDULING_CONFIG.defaultWorkHours);
-  const today = getTodayStr();
-  const endDate = addDays(today, SCHEDULING_CONFIG.maxDays);
-  await pool.init(lineCodes, today, endDate);
+  const poolStart = startDate || getTodayStr();
+  const endDate   = addDays(poolStart, SCHEDULING_CONFIG.maxDays);
+  await pool.init(lineCodes, poolStart, endDate);
   return pool;
 }

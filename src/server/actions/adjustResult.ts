@@ -334,7 +334,8 @@ export async function adjustResult(ctx: Context) {
       // 注入 strategy=ESG：Gantt 组件只管 ESG 产线，不触发 EE 排产
       const origValues = ctx.action?.params?.values ?? {};
       if (ctx.action?.params) {
-        ctx.action.params.values = { ...origValues, strategy: 'ESG' };
+        // 版本管理：将当前记录所属的 runId 注入重算请求，限定版本范围
+        ctx.action.params.values = { ...origValues, strategy: 'ESG', runId: original.runId ?? origValues.runId };
       }
       const savedBody = ctx.body;
       await reScheduleAfterAdjust(ctx);

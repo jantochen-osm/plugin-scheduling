@@ -50,6 +50,12 @@ export async function runScheduling(ctx: Context) {
       ? body.prodIds
       : undefined;
 
+  // startDate: 前端传入的排产开工日期（YYYY-MM-DD）；不传则退化为 getTodayStr()
+  const startDateParam: string = body.startDate && /^\d{4}-\d{2}-\d{2}$/.test(body.startDate)
+    ? body.startDate
+    : getTodayStr();
+  ctx.logger?.info?.(`[Init] startDate: ${startDateParam}`);
+
   // ── scope=current：从当前排产结果表获取产品 ID 范围 ────────────────
   if (scopeCurrent && !prodIds) {
     try {
@@ -138,8 +144,8 @@ export async function runScheduling(ctx: Context) {
     const lineCodes = await step4_collectLines(sortedOrders, ruleEngine, strategy);
     ctx.logger?.info?.(`  Lines: ${lineCodes.join(', ')}`);
 
-    // Step 5: 初始化产能池
-    const capacityPool = await step5_initCapacityPool(ctx, ruleEngine, lineCodes);
+    // Step 5: 初始化产能池（使用前端指定的开工日期）
+    const capacityPool = await step5_initCapacityPool(ctx, ruleEngine, lineCodes, startDateParam);
 
     // ── LLM 决策（可选）────────────────────────────────────────────────
     // 成功时：引导产线偏好 + 重排优先级；失败时：静默 fallback 到原算法
@@ -174,9 +180,11 @@ export async function runScheduling(ctx: Context) {
       }
     }
 
-    // 核心排产
+    // 核心排产（传入 startDateParam 使排产起算日与产能池一致，避免从 MOCK_TODAY 开工）
     const { results, exceptions: schedEx, lineUtilization } = await scheduleAll(
       sortedOrders, ruleEngine, lineCodes, capacityPool, ctx, strategy, decisionMap,
+      undefined, // initialState（全量排产无锁定预占）
+      startDateParam,
     );
     console.log(decisionMap,sortedOrders,'--------------------------------------- LLM Decision Map');
     console.log(results, schedEx, '--- Schedule All results and exceptions'); // 打印排产结果和异常以供调试验证
@@ -201,28 +209,10 @@ export async function runScheduling(ctx: Context) {
   const resultRepo = ctx.db.getRepository('schedule_results_v2');
   const excRepo = ctx.db.getRepository('schedule_exceptions_v2');
 
-  // 全量清空旧数据（全量覆盖模式）
-  try {
-    const oldResults = await resultRepo.find({ fields: ['id'], paginate: false });
-    if (oldResults.length > 0) await resultRepo.destroy({ filterByTk: oldResults.map((r: any) => r.id) });
-    ctx.logger?.info?.('[DB] Full mode: cleared all schedule_results_v2');
-  } catch (e: any) {
-    ctx.logger?.error?.('[DB][ERROR] Clear results_v2: ' + (e?.original?.message || e?.message || e));
-    throw e;
-  }
-  try {
-    // 异常表：同样按模式清空（全量清空以保持异常列表与当次排产一致）
-    const oldExcs = await excRepo.find({ fields: ['id'], paginate: false });
-    if (oldExcs.length > 0) await excRepo.destroy({ filterByTk: oldExcs.map((r: any) => r.id) });
-    ctx.logger?.info?.('[DB] Cleared old exceptions');
-  } catch (e: any) {
-    ctx.logger?.error?.('[DB][ERROR] Clear exceptions_v2: ' + (e?.original?.message || e?.message || e));
-    throw e;
-  }
+  // 版本管理：不删除旧数据，各版本按 runId 隔离共存。
 
   // 写入本次运行记录 —— 用 raw SQL 绕过 ORM 字段校验
-  // runId 与结果表绑定，为将来版本历史功能预留扩展点
-  // 构建异常摘要：summary（各类型计数）+ details（逐条明细，含 prodId/原因）
+  // 包含版本管理新字段：strategy / startDate / versionName
   const excSummary: Record<string, number> = {};
   for (const e of allExc) {
     const t = e.exceptionType || 'UNKNOWN';
@@ -244,10 +234,12 @@ export async function runScheduling(ctx: Context) {
     await ctx.db.sequelize.query(
       `INSERT INTO schedule_runs
         ("runId", "runTime", status, "totalOrders", "validOrders", "scheduledCount", "exceptionCount",
-         "successRate", "lineUtilization", "exceptionBreakdown", "selectedProdIds", "runMode")
+         "successRate", "lineUtilization", "exceptionBreakdown", "selectedProdIds", "runMode",
+         strategy, "startDate", "versionName")
        VALUES (:runId, NOW(), :status, :totalOrders, :validOrders, :scheduledCount, :exceptionCount,
                :successRate, :lineUtilization::json, :exceptionBreakdown::json,
-               :selectedProdIds::json, :runMode)`,
+               :selectedProdIds::json, :runMode,
+               :strategy, :startDate, '')`,
       {
         replacements: {
           runId,
@@ -261,6 +253,8 @@ export async function runScheduling(ctx: Context) {
           exceptionBreakdown: JSON.stringify(exceptionBreakdown),
           selectedProdIds: prodIds ? JSON.stringify(prodIds) : null,
           runMode,
+          strategy: strategyParam || 'ALL',
+          startDate: startDateParam || '',
         },
       },
     );
