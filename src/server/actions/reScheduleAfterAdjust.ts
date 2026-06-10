@@ -74,25 +74,31 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   const pinnedProdIds = new Set<string>(pinnedResults.map((r: any) => r.prodId).filter(Boolean));
   ctx.logger?.info?.(`[ReSchedule] Pinned records: ${pinnedResults.length} (prodIds: ${[...pinnedProdIds].join(', ')})`);
 
-  // ── 2. 删除旧记录（仅删本版本 runId 内的非锁定记录）────────────────────
-  // 版本管理：按 runId 隔离，不再按产线范围全表删除
-  if (!dryRun) {
-    // 2a. 先读取本版本内所有 prodId（DELETE 前读取，DELETE 后无法再读）
-    let currentScopeProdIds: string[] | undefined;
-    try {
-      const [scopeRows] = await ctx.db.sequelize.query(
-        `SELECT DISTINCT "prodId" FROM schedule_results_v2 WHERE "runId" = :runId`,
-        { replacements: { runId } },
-      ) as any;
-      currentScopeProdIds = (scopeRows as any[]).map((r: any) => r.prodId).filter(Boolean);
-      ctx.logger?.info?.(`[ReSchedule] Step 2a: Scope prodIds in runId=${runId}: ${currentScopeProdIds.length}`);
-      (reScheduleAfterAdjust as any)._currentScopeProdIds = currentScopeProdIds;
-    } catch (e: any) {
-      ctx.logger?.warn?.('[ReSchedule] Step 2a: Scope query failed: ' + e?.message);
-      (reScheduleAfterAdjust as any)._currentScopeProdIds = undefined;
-    }
+  // ── 2. 读取版本范围 prodId（必须在 DELETE 前，dryRun 也需要）────────────
+  // 无论是否 dryRun，先拿到本版本所有 prodId，作为订单范围的唯一来源
+  let scopeProdIds: string[] = [];
+  try {
+    const [scopeRows] = await ctx.db.sequelize.query(
+      `SELECT DISTINCT "prodId" FROM schedule_results_v2 WHERE "runId" = :runId`,
+      { replacements: { runId } },
+    ) as any;
+    scopeProdIds = (scopeRows as any[]).map((r: any) => r.prodId).filter(Boolean);
+    ctx.logger?.info?.(`[ReSchedule] Step 2: Version scope for runId=${runId}: ${scopeProdIds.length} prodIds`);
+  } catch (e: any) {
+    ctx.logger?.error?.('[ReSchedule] Step 2: Scope query failed: ' + e?.message);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to read version scope: ' + e?.message };
+    return;
+  }
 
-    // 2b. 删除本版本非锁定记录
+  if (scopeProdIds.length === 0) {
+    ctx.logger?.warn?.(`[ReSchedule] runId=${runId} has no records, nothing to re-schedule`);
+    ctx.body = { message: 'No records found for this version', runId };
+    return;
+  }
+
+  // ── 3. 删除旧记录（仅删本版本 runId 内的非锁定记录）────────────────────
+  if (!dryRun) {
     try {
       await ctx.db.sequelize.query(
         `DELETE FROM schedule_results_v2
@@ -100,23 +106,25 @@ export async function reScheduleAfterAdjust(ctx: Context) {
             AND ("isManualAdjusted" = false OR "isManualAdjusted" IS NULL)`,
         { replacements: { runId } },
       );
-      ctx.logger?.info?.(`[ReSchedule] Step 2b: Deleted non-pinned results for runId=${runId}`);
+      ctx.logger?.info?.(`[ReSchedule] Step 3: Deleted non-pinned results for runId=${runId}`);
     } catch (e: any) {
       ctx.logger?.error?.('[ReSchedule][ERROR] Delete non-pinned: ' + (e?.message || e));
       throw e;
     }
   }
 
-  // ── 3. 拉取订单（仅限 Step 2a 记录的当前排产存量）──────────────────
-  // _currentScopeProdIds 由 Step 2a 在 DELETE 前读取（含锁定+非锁定），
-  // undefined 表示结果表为空或查询失败，退化为全量拉取
-  ctx.logger?.info?.('[ReSchedule] Step 3: Fetching orders for current scope');
-  const currentScopeProdIds: string[] | undefined =
-    (reScheduleAfterAdjust as any)._currentScopeProdIds;
+  // ── 4. 拉取订单（严格限定在本版本 prodId 集合内，绝不引入新订单）──────
+  // 非锁定 prodId = 版本范围 - 锁定的 prodId
+  ctx.logger?.info?.('[ReSchedule] Step 4: Fetching orders strictly within version scope');
+  const nonPinnedScopeIds = scopeProdIds.filter((id) => !pinnedProdIds.has(id));
+  ctx.logger?.info?.(`[ReSchedule]   Non-pinned to re-schedule: ${nonPinnedScopeIds.length}/${scopeProdIds.length}`);
 
-  const allOrders = await step1_fetchOrders(ctx, currentScopeProdIds);
+  // 若全部锁定（没有需要重排的订单），直接结束
+  const allOrders = nonPinnedScopeIds.length > 0
+    ? await step1_fetchOrders(ctx, nonPinnedScopeIds)
+    : [];
   const nonPinnedOrders = allOrders.filter((o) => !pinnedProdIds.has(o.prodId));
-  ctx.logger?.info?.(`[ReSchedule] Total fetched: ${allOrders.length}, non-pinned to re-schedule: ${nonPinnedOrders.length}`);
+  ctx.logger?.info?.(`[ReSchedule] Fetched from DB: ${allOrders.length}, filtered non-pinned: ${nonPinnedOrders.length}`);
 
   const allResults: any[] = [];
   const allExc: any[] = [];
