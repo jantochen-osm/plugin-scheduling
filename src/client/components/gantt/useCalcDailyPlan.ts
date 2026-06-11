@@ -17,8 +17,8 @@ interface UseCalcDailyPlanParams {
  *
  * 支持 4 种输入场景：
  *   A. 两端都填  → 查 [start, finish] 范围内工作日，正向贪心填充
- *   B. 只填 startDate → 估算窗口向前查，正向贪心填充，自动回填 finishDate
- *   C. 只填 finishDate → 估算窗口向后查，倒序贪心填充，自动回填 startDate
+ *   B. 只填 startDate → 以 startDate 作为开工时间，向后查窗口，正向贪心填充，自动回填 finishDate
+ *   C. 只填 finishDate → 估算窗口向前查，倒序贪心填充，自动回填 startDate
  *   D. 都不填   → 警告退出
  *
  * 每日满产能力 = floor(UPH × workHours)，按满产贪心排满，最后一天补差（加班处理）。
@@ -29,12 +29,12 @@ export const useCalcDailyPlan = ({
 }: UseCalcDailyPlanParams) => {
 
   const calcDailyPlan = async () => {
-    const startVal  = form.getFieldValue('startDate');
+    const startVal  = form.getFieldValue('startDate');  
     const finishVal = form.getFieldValue('finishDate');
 
     // 场景 D：两端都没填
     if (!startVal && !finishVal) {
-      message.warning('请至少填写开始日期或完成日期');
+      message.warning('请至少填写开始日期或完成日期；开始日期会作为开工时间');
       return;
     }
     // 两端都填时，校验先后顺序
@@ -70,6 +70,13 @@ export const useCalcDailyPlan = ({
       queryEnd   = finishVal.format('YYYY-MM-DD');
     }
 
+    // Expand query range by 1 day on each side to prevent UTC timestamp
+    // timezone shift from excluding the boundary dates (e.g. 2026-05-28 stored
+    // as 2026-05-27T16:00:00Z is excluded by $gte: '2026-05-28T00:00:00Z').
+    // Client-side string comparison below provides the exact boundary filter.
+    const queryStartPadded = dayjs(queryStart).subtract(1, 'day').format('YYYY-MM-DD');
+    const queryEndPadded   = dayjs(queryEnd).add(1, 'day').format('YYYY-MM-DD');
+
     // 查询工作日历（isSchedulable = true）
     let workdays: string[] = [];
     let workHoursMap: Record<string, number> = {};
@@ -83,8 +90,8 @@ export const useCalcDailyPlan = ({
           sort: 'calendarDate',
           filter: JSON.stringify({
             $and: [
-              { calendarDate: { $gte: queryStart } },
-              { calendarDate: { $lte: queryEnd   } },
+              { calendarDate: { $gte: queryStartPadded } }, // padded: avoids UTC timezone boundary miss
+              { calendarDate: { $lte: queryEndPadded   } }, // padded: avoids UTC timezone boundary miss
               { isSchedulable: { $eq: true } },
             ],
           }),
@@ -99,33 +106,42 @@ export const useCalcDailyPlan = ({
         }
       }
       workdays.sort();
+      // Client-side exact filter: trim padded rows back to the intended range
+      workdays = workdays.filter((d) => d >= queryStart && d <= queryEnd);
     } catch (e: any) {
       message.error('查询工作日历失败：' + (e?.message || '未知错误'));
       return;
     }
 
     if (workdays.length === 0) {
-      message.warning(`${queryStart} 至 ${queryEnd} 范围内无可排产工作日，请重新选择`);
+      message.warning(`${queryStart} 至 ${queryEnd} 范围内无可排产工作日，请重新选择；开始日期会作为开工时间`);
       return;
     }
 
-    // ── 查同产线其他锁定订单已占产能 ────────────────────────────────────────
+    // ── Query other locked orders on the same line that overlap our window ──────
+    // Filters:
+    //   1. Same line & locked by user
+    //   2. Same runId -- avoid cross-version capacity pollution
+    //   3. finishDate >= queryStart -- only orders that could overlap our window
+    //      (this also makes the start-date visible in the API parameter)
     const usedByOthers: Record<string, number> = {};
+    const runId: string | undefined = record.runId;
     if (record.chosenLine) {
       try {
+        const lockedFilter: any[] = [
+          { chosenLine:       { $eq: record.chosenLine } },
+          { isManualAdjusted: { $eq: true              } },
+          { id:               { $ne: record.id         } },
+          { finishDate:       { $gte: queryStart       } }, // only orders overlapping our window
+        ];
+        if (runId) lockedFilter.push({ runId: { $eq: runId } }); // same version only
         const lockedRes = await api.request({
           url: 'schedule_results_v2:list',
           method: 'get',
           params: {
             paginate: false, pageSize: 500,
-            fields: 'dailyPlan',
-            filter: JSON.stringify({
-              $and: [
-                { chosenLine:       { $eq: record.chosenLine } },
-                { isManualAdjusted: { $eq: true              } },
-                { id:               { $ne: record.id         } },
-              ],
-            }),
+            fields: 'dailyPlan,startDate,finishDate',
+            filter: JSON.stringify({ $and: lockedFilter }),
           },
         });
         const otherLocked: any[] = lockedRes?.data?.data || [];
@@ -133,7 +149,10 @@ export const useCalcDailyPlan = ({
           const plan: Record<string, number> =
             typeof r.dailyPlan === 'string' ? JSON.parse(r.dailyPlan || '{}') : (r.dailyPlan || {});
           for (const [date, qty] of Object.entries(plan)) {
-            usedByOthers[date] = (usedByOthers[date] || 0) + Number(qty);
+            // only count dates within our scheduling window
+            if (date >= queryStart && date <= queryEnd) {
+              usedByOthers[date] = (usedByOthers[date] || 0) + Number(qty);
+            }
           }
         }
       } catch (_) {
@@ -142,6 +161,7 @@ export const useCalcDailyPlan = ({
     }
 
     // ── 贪心填充（正向 or 反向）────────────────────────────────────────────
+    // 场景 B：startDate 是开工时间，必须保留为正向排产起点
     // 场景 C 倒序：确保 finishDate 一定有产量，startDate 为余量日
     const fillDays = mode === 'onlyFinish' ? [...workdays].reverse() : workdays;
 
@@ -161,7 +181,7 @@ export const useCalcDailyPlan = ({
           allocated  += qty;
         }
       });
-      message.warning('⚠️ 该订单无 UPH 数据，已按工时比例均摊');
+      message.warning('⚠️ 该订单无 UPH 数据，已按工时比例均摊；开始日期仍作为开工时间');
     } else {
       for (let i = 0; i < fillDays.length; i++) {
         const d            = fillDays[i];
@@ -191,15 +211,14 @@ export const useCalcDailyPlan = ({
     // 实际使用的日期（有产量，升序）
     const usedDays = [...newDateSet].sort();
 
-    // 自动回填表单日期（场景 B/C）
+    // 回填表单日期（无论哪种场景，均以实际计算结果同步两端日期）
     if (usedDays.length > 0) {
       const calcedStart  = usedDays[0];
       const calcedFinish = usedDays[usedDays.length - 1];
-      if (mode === 'onlyStart') {
-        form.setFieldsValue({ finishDate: dayjs(calcedFinish) });
-      } else if (mode === 'onlyFinish') {
-        form.setFieldsValue({ startDate: dayjs(calcedStart) });
-      }
+      form.setFieldsValue({
+        startDate:  dayjs(calcedStart),
+        finishDate: dayjs(calcedFinish),
+      });
     }
 
     setPatchMap(newPatch);
@@ -209,7 +228,7 @@ export const useCalcDailyPlan = ({
     const calcedStart  = usedDays[0]  ?? queryStart;
     const calcedFinish = usedDays[usedDays.length - 1] ?? queryEnd;
     message.success(
-      `✅ 已按满产能力排产，${calcedStart} ~ ${calcedFinish}，共 ${usedDays.length} 个工作日，合计 ${totalQty.toLocaleString()} 件`
+      `✅ 已按满产能力排产，${calcedStart} ~ ${calcedFinish}，共 ${usedDays.length} 个工作日，合计 ${totalQty.toLocaleString()} 件；开始日期视为开工时间`
     );
   };
 

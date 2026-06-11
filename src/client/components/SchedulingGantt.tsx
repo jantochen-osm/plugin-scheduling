@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Table, Tag, Typography, Space, message, Button, Radio,
-  Popover, Tooltip, Popconfirm, Alert,
+  Popover, Tooltip, Popconfirm, Alert, Modal, DatePicker,
 } from 'antd';
 import { dayjs, formatNum } from './gantt/utils';
 import { CapacityDetailCard } from './gantt/CapacityDetailCard';
@@ -21,13 +21,15 @@ interface SchedulingGanttProps {
 const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
   const [rawRecords,     setRawRecords]     = useState<any[]>([]);
   const [loading,        setLoading]        = useState(false);
-  const [viewMode,       setViewMode]       = useState<'grouped' | 'flat'>('grouped');
+  const [viewMode]      = useState<'grouped'>('grouped');
   const [factoryCalendar, setFactoryCalendar] = useState<Record<string, any>>({});
   const [currentRunId,   setCurrentRunId]   = useState<string | undefined>(runId);
 
   const [drawerOpen,     setDrawerOpen]     = useState(false);
   const [drawerRecord,   setDrawerRecord]   = useState<any>(null);
   const [reScheduling,   setReScheduling]   = useState(false);
+  const [unlockRescheduleOpen, setUnlockRescheduleOpen] = useState(false);
+  const [unlockRescheduleStartDate, setUnlockRescheduleStartDate] = useState<any>(dayjs());
 
   /** 已锁定条数（直接从 rawRecords 计算，无需额外请求）*/
   const adjustedCount = useMemo(
@@ -147,10 +149,19 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
   const handleReSchedule = useCallback(async () => {
     setReScheduling(true);
     try {
+      // Derive the version's earliest startDate from current records so the
+      // scheduler starts non-pinned orders from the right date instead of
+      // defaulting to today (which would waste capacity between the version
+      // start and today).
+      const versionStartDate = rawRecords
+        .map((r: any) => (r.startDate ? dayjs(r.startDate).format('YYYY-MM-DD') : ''))
+        .filter(Boolean)
+        .sort()[0];
+
       const result = await api.request({
         url: 'scheduling:reScheduleAfterAdjust',
         method: 'post',
-        data: { strategy: 'ESG', runId: currentRunId },
+        data: { strategy: 'ESG', runId: currentRunId, startDate: versionStartDate },
       });
       const data = result?.data;
       message.success(
@@ -162,7 +173,43 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
     } finally {
       setReScheduling(false);
     }
-  }, [api, currentRunId, fetchScheduleData]);
+  }, [api, currentRunId, fetchScheduleData, rawRecords]);
+
+  const handleUnlockAllAndReschedule = useCallback(async () => {
+    setReScheduling(true);
+    try {
+      if (!currentRunId) {
+        throw new Error('当前版本号不存在，无法执行版本内重排');
+      }
+
+      const unlockRes = await api.request({
+        url: 'scheduling:unlockAllByRunId',
+        method: 'post',
+        data: { runId: currentRunId },
+      });
+      const unlockedCount = unlockRes?.data?.unlockedCount ?? 0;
+
+      const result = await api.request({
+        url: 'scheduling:reScheduleAfterAdjust',
+        method: 'post',
+        data: {
+          strategy: 'ESG',
+          runId: currentRunId,
+          startDate: unlockRescheduleStartDate?.format('YYYY-MM-DD'),
+        },
+      });
+      const data = result?.data || {};
+      message.success(
+        `已完成版本内重排：版本 ${currentRunId}，解锁 ${unlockedCount} 条，开工日期 ${unlockRescheduleStartDate?.format('YYYY-MM-DD') || '今日'}，重排 ${data?.reScheduledCount ?? 0} 条`,
+      );
+      fetchScheduleData();
+    } catch (e: any) {  
+      message.error('版本内重排失败：' + (e?.message || ''));
+    } finally {
+      setReScheduling(false);
+      setUnlockRescheduleOpen(false);
+    }
+  }, [api, currentRunId, fetchScheduleData, unlockRescheduleStartDate]);
 
   // 初始加载
   useEffect(() => { fetchScheduleData(); }, []);
@@ -476,11 +523,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
       {/* 工具栏 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <Space size="large">
-          <Title level={4} style={{ margin: 0 }}>车间排产动态矩阵 (Gantt)</Title>
-          <Radio.Group value={viewMode} onChange={(e) => setViewMode(e.target.value)} buttonStyle="solid">
-            <Radio.Button value="flat">按订单明细</Radio.Button>
-            <Radio.Button value="grouped">按产线排期（可拖拽）</Radio.Button>
-          </Radio.Group>
+        <Title level={4} style={{ margin: 0 }}>车间排产动态矩阵 (Gantt)</Title>
         </Space>
 
         <Space wrap>
@@ -508,25 +551,18 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
             <Popconfirm
               title={
                 <div>
-                  <div style={{ fontWeight: 600 }}>解锁全部 {adjustedCount} 条锁定记录？</div>
+                  <div style={{ fontWeight: 600 }}>解锁全部 {adjustedCount} 条锁定记录并在当前版本内重排？</div>
                   <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
-                    此操作将清除所有手工调整，重新全量排产，不可撤销。
+                    此操作将清除当前版本的手工调整，并按所选开工日期重新排产，不可撤销。
                   </div>
                 </div>
               }
-              onConfirm={async () => {
-                try {
-                  await api.request({ url: 'scheduling:run', method: 'post', data: { strategy: 'ESG', scope: 'current' } });
-                  message.success('已全量重排，所有手工调整已清除');
-                  fetchScheduleData();
-                } catch (e: any) {
-                  message.error('全量重排失败：' + (e?.message || ''));
-                }
-              }}
-              okText="确定解锁全量重排" cancelText="取消"
+              onConfirm={() => setUnlockRescheduleOpen(true)}
+              okText="继续"
+              cancelText="取消"
               okButtonProps={{ danger: true }}
             >
-              <Button danger size="small">解锁全部并重排</Button>
+              <Button danger size="small">解锁全部并版本内重排</Button>
             </Popconfirm>
           )}
 
@@ -534,46 +570,53 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
         </Space>
       </div>
 
-      {/* 拖拽树形视图（grouped）vs 订单明细表格（flat）*/}
-      {viewMode === 'grouped' ? (
-        <>
-          <DraggableGantt
-            records={flatGroupedData}
-            globalDates={globalDates}
-            factoryCalendar={factoryCalendar || {}}
-            api={api}
-            onSaved={fetchScheduleData}
-            onClickRecord={openDrawer}
+      <Modal
+        title="解锁全部并版本内重排"
+        open={unlockRescheduleOpen}
+        onCancel={() => setUnlockRescheduleOpen(false)}
+        onOk={handleUnlockAllAndReschedule}
+        okText="确认重排"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading: reScheduling }}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Alert
+            type="warning"
+            showIcon
+            message="此操作会清除当前版本的手工调整，并按所选开工日期重新排产。"
           />
-          {/* 调整弹窗（点击条形时弹出） */}
-          <AdjustDrawer
-            open={drawerOpen}
-            record={drawerRecord}
-            onClose={closeDrawer}
-            onSaved={fetchScheduleData}
-            api={api}
-          />
-        </>
-      ) : (
-        <>
-          {/* 订单明细表格 */}
-          <Table
-            loading={loading} columns={columns} dataSource={tableData}
-            rowKey="id" size="small" bordered
-            scroll={{ x: 'max-content', y: 650 }}
-            pagination={{ pageSize: 50 }}
-            rowClassName={(record: any) => record.isManualAdjusted ? 'row-adjusted' : ''}
-          />
-          {/* 调整弹窗 */}
-          <AdjustDrawer
-            open={drawerOpen}
-            record={drawerRecord}
-            onClose={closeDrawer}
-            onSaved={fetchScheduleData}
-            api={api}
-          />
-        </>
-      )}
+          <Space align="center" size={8}>
+            <span>开工日期</span>
+            <DatePicker
+              format="YYYY-MM-DD"
+              value={unlockRescheduleStartDate}
+              onChange={(val: any) => setUnlockRescheduleStartDate(val || dayjs())}
+              allowClear={false}
+            />
+          </Space>
+        </Space>
+      </Modal>
+
+      {/* 拖拽树形视图（按产线排期）*/}
+      <>
+        <DraggableGantt
+          records={flatGroupedData}
+          globalDates={globalDates}
+          factoryCalendar={factoryCalendar || {}}
+          api={api}
+          onSaved={fetchScheduleData}
+          onClickRecord={openDrawer}
+        />
+        {/* 调整弹窗（点击条形时弹出） */}
+        <AdjustDrawer
+          open={drawerOpen}
+          record={drawerRecord}
+          onClose={closeDrawer}
+          onSaved={fetchScheduleData}
+          api={api}
+        />
+      </>
     </div>
   );
 };

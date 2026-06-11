@@ -42,6 +42,16 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   const strategyParam: string = (body.strategy || '').toUpperCase();
   const dryRun: boolean = body.dryRun === true;
 
+  // Determine which osmCategories will be re-scheduled by the given strategy.
+  // CRITICAL: The DELETE in Step 3 must be scoped to ONLY these categories.
+  // If strategy='ESG', we must NOT delete EE records -- they'd be lost forever.
+  const osmCategoriesToReSchedule: string[] = [];
+  if (!strategyParam || strategyParam === 'EE')  osmCategoriesToReSchedule.push('EE');
+  if (!strategyParam || strategyParam === 'ESG') osmCategoriesToReSchedule.push('ESG');
+  // Build a SQL IN literal (safe: values are hardcoded 'EE'/'ESG', not user input)
+  const catInClause = osmCategoriesToReSchedule.map(c => `'${c}'`).join(', ');
+  ctx.logger?.info?.(`[ReSchedule] Strategy: "${strategyParam || 'ALL'}", categories: ${catInClause}`);
+
   // ── 版本管理：runId 必填，所有操作均限定在此版本范围内 ─────────────────
   const runId: string = body.runId;
   if (!runId) {
@@ -77,13 +87,30 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   // ── 2. 读取版本范围 prodId（必须在 DELETE 前，dryRun 也需要）────────────
   // 无论是否 dryRun，先拿到本版本所有 prodId，作为订单范围的唯一来源
   let scopeProdIds: string[] = [];
+  let versionMinStart: string | undefined; // earliest startDate in this version (fallback for scheduleStartDate)
   try {
     const [scopeRows] = await ctx.db.sequelize.query(
-      `SELECT DISTINCT "prodId" FROM schedule_results_v2 WHERE "runId" = :runId`,
+      // Only read prodIds whose osmCategory matches the strategies being run.
+      // This prevents re-scheduling orders of a different category
+      // (e.g., EE orders when strategy='ESG').
+      `SELECT DISTINCT "prodId" FROM schedule_results_v2
+        WHERE "runId" = :runId
+          AND "osmCategory" IN (${catInClause})`,
       { replacements: { runId } },
     ) as any;
     scopeProdIds = (scopeRows as any[]).map((r: any) => r.prodId).filter(Boolean);
-    ctx.logger?.info?.(`[ReSchedule] Step 2: Version scope for runId=${runId}: ${scopeProdIds.length} prodIds`);
+    ctx.logger?.info?.(`[ReSchedule] Step 2: Version scope for runId=${runId} (categories=${catInClause}): ${scopeProdIds.length} prodIds`);
+
+    // Also read the version's earliest startDate (within the same category scope)
+    // so we can use it as a fallback when the caller did not supply body.startDate.
+    const [minStartRows] = await ctx.db.sequelize.query(
+      `SELECT MIN("startDate")::text AS "minStart" FROM schedule_results_v2
+        WHERE "runId" = :runId
+          AND "osmCategory" IN (${catInClause})`,
+      { replacements: { runId } },
+    ) as any;
+    versionMinStart = (minStartRows as any[])[0]?.minStart ?? undefined;
+    ctx.logger?.info?.(`[ReSchedule] Step 2: Version minStart=${versionMinStart ?? '(none)'}`);
   } catch (e: any) {
     ctx.logger?.error?.('[ReSchedule] Step 2: Scope query failed: ' + e?.message);
     ctx.status = 500;
@@ -101,12 +128,16 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   if (!dryRun) {
     try {
       await ctx.db.sequelize.query(
+        // IMPORTANT: only delete records whose category matches the strategies being run.
+        // If strategy='ESG', EE records must NOT be deleted -- they cannot be re-inserted
+        // by the ESG scheduler and would be permanently lost from the version.
         `DELETE FROM schedule_results_v2
           WHERE "runId" = :runId
-            AND ("isManualAdjusted" = false OR "isManualAdjusted" IS NULL)`,
+            AND ("isManualAdjusted" = false OR "isManualAdjusted" IS NULL)
+            AND "osmCategory" IN (${catInClause})`,
         { replacements: { runId } },
       );
-      ctx.logger?.info?.(`[ReSchedule] Step 3: Deleted non-pinned results for runId=${runId}`);
+      ctx.logger?.info?.(`[ReSchedule] Step 3: Deleted non-pinned (${catInClause}) results for runId=${runId}`);
     } catch (e: any) {
       ctx.logger?.error?.('[ReSchedule][ERROR] Delete non-pinned: ' + (e?.message || e));
       throw e;
@@ -224,8 +255,8 @@ export async function reScheduleAfterAdjust(ctx: Context) {
       ctx,
       strategy,
       decisionMap,
-      { lineLastFinish, lineLastItem },   // ← initialState：锁定记录产线状态
-      body.startDate || undefined,        // ← scheduleStartDate：与产能池起点对齐
+      { lineLastFinish, lineLastItem },   // <- initialState: locked record line state
+      body.startDate || versionMinStart || undefined,  // scheduleStartDate: explicit > version min > default(today)
     );
 
     allResults.push(...results);

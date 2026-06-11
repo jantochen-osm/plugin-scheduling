@@ -7,6 +7,7 @@ import { lastRun } from './actions/lastRun';
 import { listRuns } from './actions/listRuns';
 import { removeResults } from './actions/removeResults';
 import { reScheduleAfterAdjust } from './actions/reScheduleAfterAdjust';
+import { unlockAllByRunId } from './actions/unlockAllByRunId';
 import { getWorkdays } from './actions/getWorkdays';
 import { deleteVersion } from './actions/deleteVersion';
 
@@ -98,6 +99,7 @@ export class PluginSchedulingServer extends Plugin {
         listRuns,              // 排产历史列表（分页，raw SQL）
         removeResults,         // 撤销指定订单的排产结果
         reScheduleAfterAdjust, // 调整后重计算（保留锁定记录，仅重排未锁定订单）
+        unlockAllByRunId,      // 批量解锁指定版本内的所有手工调整记录
         workdays: getWorkdays,  // 查询工作日历（前端按日期自动计算每日产量）
         deleteVersion,          // 删除指定版本的排产结果
       },
@@ -108,7 +110,7 @@ export class PluginSchedulingServer extends Plugin {
       'scheduling',
       ['run', 'validate', 'adjustResult', 'previewOrders',
        'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust', 'workdays',
-       'deleteVersion'],
+       'unlockAllByRunId', 'deleteVersion'],
       'loggedIn',
     );
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');

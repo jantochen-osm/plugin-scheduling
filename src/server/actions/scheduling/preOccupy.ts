@@ -1,41 +1,53 @@
 /**
  * scheduling/preOccupy.ts
  *
- * 锁定记录产能预占（Pinned Results Pre-Occupation）。
+ * Pinned Results Pre-Occupation.
  *
- * 重算（reScheduleAfterAdjust）时，在初始化产能池后、scheduleAll 执行前调用，
- * 将 isManualAdjusted=true 的锁定记录占用到产能池，使调度器感知已承诺的产能。
+ * Called in reScheduleAfterAdjust after initialising the capacity pool but
+ * before scheduleAll runs.  It allocates the capacity already committed by
+ * locked records (isManualAdjusted=true) into the capacity pool so the
+ * scheduler cannot double-book those slots.
  *
- * ⚠️ 设计决策：本模块「只预占产能，不更新 lineLastFinish / lineLastItem」
- *   锁定订单的语义是"该日期/产线的产能已承诺"，而不是"其他订单必须在它之后排"。
- *   若更新 lineLastFinish，调度器会把所有后续订单连锁推到锁定日期之后，
- *   导致高优先级逾期单也被错误延后，违背交期优先规则。
- *   lineLastFinish / lineLastItem 由 scheduleAll 主循环在排完每个非锁定订单后自动维护。
+ * Design decision: This module ONLY pre-occupies capacity.
+ * It does NOT update lineLastFinish / lineLastItem.
+ *
+ * Reason: if we set lineLastFinish[line] to the locked order's last date,
+ * every non-pinned order targeting that line is pushed to start AFTER the
+ * locked order -- potentially BEYOND the capacity pool's end date (today +
+ * maxDays).  When that happens, tryScheduleStage finds zero available
+ * capacity and the order produces no result, causing it to silently
+ * disappear from the Gantt.
+ *
+ * The safer behaviour is to let non-pinned orders compete freely for
+ * whatever capacity slots are left in the pool.  The pre-occupation already
+ * prevents double-booking: the scheduler will naturally skip days that are
+ * already fully consumed by the locked order and fill in the remaining gaps.
+ * The schedule may look "fragmented" but no orders will be lost.
+ *
+ * lineLastFinish / lineLastItem are maintained exclusively by the scheduleAll
+ * main loop as it commits each non-pinned result.
  */
 
 import { CapacityPool } from '../../engines';
-import { formatDate, getTodayStr } from './config';
 
 /**
- * 将 isManualAdjusted=true 的锁定记录预先占用到产能池。
+ * Pre-occupy locked records in the capacity pool.
  *
- * @param pinnedResults   isManualAdjusted=true 的排产记录数组
- * @param capacityPool    已初始化的产能池（step5 产物）
- * @param lineLastFinish  保留参数（本函数不写入，由 scheduleAll 主循环维护）
- * @param lineLastItem    保留参数（本函数不写入，由 scheduleAll 主循环维护）
+ * @param pinnedResults   Records where isManualAdjusted=true
+ * @param capacityPool    Initialised capacity pool (step5 output)
+ * @param lineLastFinish  NOT written by this function (signature kept for caller compatibility)
+ * @param lineLastItem    NOT written by this function (signature kept for caller compatibility)
  */
 export function preOccupyPinnedResults(
   pinnedResults: any[],
   capacityPool: CapacityPool,
-  lineLastFinish: Record<string, string>,   // 保留签名兼容性，本函数不写入
-  lineLastItem: Record<string, string>,     // 保留签名兼容性，本函数不写入
+  lineLastFinish: Record<string, string>,   // kept for API compatibility, not written
+  lineLastItem: Record<string, string>,     // kept for API compatibility, not written
 ): void {
-  // 参数保留但不使用（兼容调用方传参），显式声明避免 TS 警告
+  // Explicitly unused -- non-pinned orders start from today and compete freely
+  // for whatever capacity the locked orders leave behind.
   void lineLastFinish;
   void lineLastItem;
-
-  const todayStr = getTodayStr();
-  const skippedHistorical: string[] = [];
 
   for (const r of pinnedResults) {
     const line = r.chosenLine;
@@ -47,31 +59,14 @@ export function preOccupyPinnedResults(
         ? JSON.parse(r.dailyPlan || '{}')
         : (r.dailyPlan || {});
 
-    // 从 dailyPlan 取实际有效产量的最晚日期（不用 finishDate，可能是旧排产遗留值）
-    const validDates = Object.entries(dailyPlan)
-      .filter(([, qty]) => (qty as number) > 0)
-      .map(([d]) => d)
-      .sort();
-    const latestDailyPlanDate = validDates.at(-1) || '';
-
-    // 历史日期锁定记录跳过：容量池从 today 起始，历史日期无产能槽，allocate 无效
-    if (latestDailyPlanDate && latestDailyPlanDate < todayStr) {
-      skippedHistorical.push(`${r.prodId}@${line}(latestDailyPlan=${latestDailyPlanDate})`);
-      continue;
-    }
-
-    // ── 唯一操作：预占产能槽 ──────────────────────────────────────────────
-    // 不更新 lineLastFinish / lineLastItem，让非锁定订单按交期规则自由竞争空闲产能
+    // Allocate every production day of the locked order into the capacity pool.
+    // This prevents the scheduler from assigning the same slot to a non-pinned order.
     for (const [date, qty] of Object.entries(dailyPlan)) {
       const hours = (qty as number) / uph;
       if (hours > 0) capacityPool.allocate(line, date, hours);
     }
   }
 
-  if (skippedHistorical.length > 0) {
-    (preOccupyPinnedResults as any)._lastSkipped = skippedHistorical;
-  }
+  // Clear the skipped list (no historical skip logic in this version)
+  (preOccupyPinnedResults as any)._lastSkipped = [];
 }
-
-// 仅用于避免 TS "unused import" 警告（formatDate 供调试时扩展使用）
-void formatDate;

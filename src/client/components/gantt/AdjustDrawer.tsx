@@ -23,7 +23,7 @@ interface AdjustDrawerProps {
  * 功能：
  *  - 修改开始/完成日期、换产线、填写备注
  *  - 手动编辑每日产量（增删改）
- *  - 「按日期计算」一键按满产能力分配（支持单端日期）
+ *  - 「按日期计算」一键按满产能力分配（开始日期视为开工时间）
  *  - 保存前校验日期一致性（与每日列表不一致时提示确认）
  *  - 保存后可选触发重算
  *  - 已调整记录可解锁
@@ -233,6 +233,13 @@ export const AdjustDrawer: React.FC<AdjustDrawerProps> = ({
 
       <Form form={form} layout="vertical" size="small">
         <Divider orientation="left" style={{ fontSize: 13, marginTop: 0 }}>基本信息调整</Divider>
+
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="按日期计算时，开始日期会作为开工时间；如果只填写开始日期，系统会自动向后补齐完成日期。"
+        />
 
         <Form.Item name="chosenLine" label="换产线">
           <Select

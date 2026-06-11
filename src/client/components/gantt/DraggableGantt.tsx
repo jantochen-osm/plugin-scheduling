@@ -17,6 +17,9 @@ interface DragState {
   id: any;
   startX: number;
   deltaDays: number;
+  clampedDeltaDays: number;
+  hitBoundary: boolean;
+  warnedBoundary: boolean;
 }
 
 export interface DraggableGanttProps {
@@ -48,6 +51,11 @@ async function calcGreedyFill(
     : 90;
   const queryEnd = dayjs(newStartDate).add(estimateDays, 'day').format('YYYY-MM-DD');
 
+  // Expand query range by 1 day on each side to prevent UTC timestamp timezone
+  // shift from excluding the boundary start date (same fix as useCalcDailyPlan).
+  const queryStartPadded = dayjs(newStartDate).subtract(1, 'day').format('YYYY-MM-DD');
+  const queryEndPadded   = dayjs(queryEnd).add(1, 'day').format('YYYY-MM-DD');
+
   let workdays: string[] = [];
   let workHoursMap: Record<string, number> = {};
   try {
@@ -58,8 +66,8 @@ async function calcGreedyFill(
         paginate: false, pageSize: 500, sort: 'calendarDate',
         filter: JSON.stringify({
           $and: [
-            { calendarDate: { $gte: newStartDate } },
-            { calendarDate: { $lte: queryEnd } },
+            { calendarDate: { $gte: queryStartPadded } }, // padded: avoids UTC timezone boundary miss
+            { calendarDate: { $lte: queryEndPadded   } }, // padded: avoids UTC timezone boundary miss
             { isSchedulable: { $eq: true } },
           ],
         }),
@@ -71,6 +79,8 @@ async function calcGreedyFill(
       if (d) { workdays.push(d); workHoursMap[d] = Number(r.workHours) || 10; }
     }
     workdays.sort();
+    // Client-side exact filter: trim padded boundary days back to intended range
+    workdays = workdays.filter((d) => d >= newStartDate && d <= queryEnd);
   } catch (e: any) {
     message.error('查询工作日历失败：' + (e?.message || ''));
     return null;
@@ -81,23 +91,25 @@ async function calcGreedyFill(
     return null;
   }
 
-  // ── 查同产线其他锁定订单已占产能 ────────────────────────────────────────
+  // ── Query other locked orders on same line overlapping our window ────────
+  // Same fixes as useCalcDailyPlan: runId isolation + date range + window-only dates
   const usedByOthers: Record<string, number> = {};
   if (record.chosenLine) {
     try {
+      const lockedFilter: any[] = [
+        { chosenLine:       { $eq: record.chosenLine } },
+        { isManualAdjusted: { $eq: true              } },
+        { id:               { $ne: record.id         } },
+        { finishDate:       { $gte: newStartDate     } }, // only orders overlapping our window
+      ];
+      if (record.runId) lockedFilter.push({ runId: { $eq: record.runId } }); // same version only
       const lockedRes = await api.request({
         url: 'schedule_results_v2:list',
         method: 'get',
         params: {
           paginate: false, pageSize: 500,
-          fields: 'dailyPlan',
-          filter: JSON.stringify({
-            $and: [
-              { chosenLine:       { $eq: record.chosenLine } },
-              { isManualAdjusted: { $eq: true              } },
-              { id:               { $ne: record.id         } },
-            ],
-          }),
+          fields: 'dailyPlan,startDate,finishDate',
+          filter: JSON.stringify({ $and: lockedFilter }),
         },
       });
       const otherLocked: any[] = lockedRes?.data?.data || [];
@@ -105,7 +117,10 @@ async function calcGreedyFill(
         const plan: Record<string, number> =
           typeof r.dailyPlan === 'string' ? JSON.parse(r.dailyPlan || '{}') : (r.dailyPlan || {});
         for (const [date, qty] of Object.entries(plan)) {
-          usedByOthers[date] = (usedByOthers[date] || 0) + Number(qty);
+          // only count dates within our scheduling window
+          if (date >= newStartDate && date <= queryEnd) {
+            usedByOthers[date] = (usedByOthers[date] || 0) + Number(qty);
+          }
         }
       }
     } catch (_) {
@@ -175,6 +190,8 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
   }, []);
   const totalBodyH = records.reduce((s, r) => s + rowH(r), 0);
   const totalW     = globalDates.length * COL_W;
+  const minDate = globalDates[0] ? dayjs(globalDates[0]) : null;
+  const maxDate = globalDates[globalDates.length - 1] ? dayjs(globalDates[globalDates.length - 1]) : null;
 
   // Pre-compute rest-day column indices
   const restDayIndices: number[] = globalDates
@@ -189,6 +206,14 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
   const handleDrop = useCallback(async (record: any, deltaDays: number) => {
     if (deltaDays === 0) return;
     const newStartDate = dayjs(record.startDate).add(deltaDays, 'day').format('YYYY-MM-DD');
+
+    if (minDate && maxDate) {
+      const newStart = dayjs(newStartDate);
+      if (newStart.isBefore(minDate, 'day') || newStart.isAfter(maxDate, 'day')) {
+        message.warning('已到时间轴边界，不能继续拖动');
+        return;
+      }
+    }
 
     setSavingIds(prev => new Set([...prev, record.id]));
     try {
@@ -219,7 +244,7 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
     } finally {
       setSavingIds(prev => { const n = new Set(prev); n.delete(record.id); return n; });
     }
-  }, [api, onSaved]);
+  }, [api, maxDate, minDate, onSaved]);
 
   // ── Pointer event handlers ───────────────────────────────────────────────
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>, record: any) => {
@@ -227,16 +252,37 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
     e.preventDefault();
     dragStartX.current = e.clientX;
     (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-    setDrag({ id: record.id, startX: e.clientX, deltaDays: 0 });
+    setDrag({ id: record.id, startX: e.clientX, deltaDays: 0, clampedDeltaDays: 0, hitBoundary: false, warnedBoundary: false });
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>, record: any) => {
     if (!drag || drag.id !== record.id) return;
-    const newDelta = Math.round((e.clientX - drag.startX) / COL_W);
-    if (newDelta !== drag.deltaDays) setDrag(prev => prev ? { ...prev, deltaDays: newDelta } : null);
+    const rawDelta = Math.round((e.clientX - drag.startX) / COL_W);
+    const startIdx = globalDates.indexOf(dayjs(record.startDate).format('YYYY-MM-DD'));
+    const endIdx   = globalDates.indexOf(dayjs(record.finishDate).format('YYYY-MM-DD'));
+    if (startIdx < 0 || endIdx < 0) return;
+
+    const minDelta = -startIdx;
+    const maxDelta = globalDates.length - 1 - endIdx;
+    const clampedDelta = Math.max(minDelta, Math.min(maxDelta, rawDelta));
+    const hitBoundary = rawDelta !== clampedDelta;
+
+    if (clampedDelta !== drag.clampedDeltaDays || hitBoundary !== drag.hitBoundary || rawDelta !== drag.deltaDays) {
+      setDrag(prev => prev ? {
+        ...prev,
+        deltaDays: rawDelta,
+        clampedDeltaDays: clampedDelta,
+        hitBoundary,
+      } : null);
+    }
+
+    if (hitBoundary && !drag.warnedBoundary) {
+      setDrag(prev => prev ? { ...prev, warnedBoundary: true } : null);
+      message.warning('已到时间轴边界，不能继续拖动');
+    }
   };
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>, record: any) => {
     if (!drag || drag.id !== record.id) return;
-    const finalDelta = drag.deltaDays;
+    const finalDelta = drag.clampedDeltaDays;
     const totalMove  = Math.abs(e.clientX - dragStartX.current);
     setDrag(null);
     if (totalMove < 5) {
@@ -450,7 +496,8 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
 
             const isDragging   = drag?.id === record.id;
             const rawDelta     = isDragging ? (drag?.deltaDays || 0) : 0;
-            const clamped      = Math.max(-startIdx, Math.min(globalDates.length - 1 - endIdx, rawDelta));
+            const clamped      = isDragging ? (drag?.clampedDeltaDays ?? 0) : 0;
+            const hitBoundary  = isDragging ? Boolean(drag?.hitBoundary) : false;
 
             const rowTop    = HDR_H + rowTops[rowIdx];
             const barLeft   = (startIdx + clamped) * COL_W + 3;
@@ -490,7 +537,9 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                     cursor: isSaving ? 'wait' : (isDragging ? 'grabbing' : 'grab'),
                     zIndex: isDragging ? 30 : 5,
                     boxShadow: isDragging
-                      ? `0 8px 24px rgba(0,0,0,0.18), 0 0 0 2px ${barColor}40`
+                      ? hitBoundary
+                        ? `0 8px 24px rgba(0,0,0,0.18), 0 0 0 2px #ff4d4f66`
+                        : `0 8px 24px rgba(0,0,0,0.18), 0 0 0 2px ${barColor}40`
                       : '0 1px 4px rgba(0,0,0,0.10)',
                     transform: isDragging ? 'scaleY(1.04)' : 'none',
                     transition: isDragging ? 'box-shadow 0.1s' : 'box-shadow 0.15s, transform 0.1s',
@@ -517,6 +566,14 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                         width: 3, height: '100%',
                         background: barColor, borderRadius: '6px 0 0 6px',
                       }} />
+                      {isDragging && hitBoundary && (
+                        <div style={{
+                          position: 'absolute', inset: 0,
+                          border: '1px dashed #ff4d4f',
+                          borderRadius: 6,
+                          pointerEvents: 'none',
+                        }} />
+                      )}
 
                       {/* 上部：订单信息 */}
                       <div style={{
