@@ -46,6 +46,13 @@ export interface LineSelectWeights {
   loadBalance: number;
 }
 
+export interface SchedulablePool {
+  poolId: string;
+  poolName: string;
+  osmCategory: string; // 'EE' | 'ESG' | 'ALL'
+  isActive: boolean;
+}
+
 // ─── Engine 类 ───
 
 export class RuleEngine {
@@ -55,6 +62,7 @@ export class RuleEngine {
   private customerLineCache: Map<string, CustomerLineResult> | null = null;
   private calendarExceptionCache: Map<string, CalendarException> | null = null;
   private workCalendarCache: Map<string, WorkCalendarDay> | null = null;
+  private schedulablePoolCache: Map<string, SchedulablePool> | null = null;
   private weights: LineSelectWeights;
 
   constructor(ctx: Context, weights?: Partial<LineSelectWeights>) {
@@ -91,11 +99,23 @@ export class RuleEngine {
     return { ...this.weights };
   }
 
+  /**
+   * 获取可排产订单池列表
+   * @param osmCategory 按品类过滤（EE / ESG）；不传则返回全部
+   */
+  async getSchedulablePools(osmCategory?: string): Promise<SchedulablePool[]> {
+    await this.ensureSchedulablePoolCache();
+    const all = [...this.schedulablePoolCache!.values()].filter(p => p.isActive);
+    if (!osmCategory) return all;
+    return all.filter(p => p.osmCategory === osmCategory || p.osmCategory === 'ALL');
+  }
+
   /** 强制刷新所有缓存 */
   invalidateCache(): void {
     this.customerLineCache = null;
     this.calendarExceptionCache = null;
     this.workCalendarCache = null;
+    this.schedulablePoolCache = null;
   }
 
   // ─── 内部加载方法 ───
@@ -155,6 +175,21 @@ export class RuleEngine {
         isSchedulable: !!r.isSchedulable,
         workHours: Number(r.workHours) || 0,
         dayOfWeek: Number(r.dayOfWeek) || 0,
+      });
+    }
+  }
+
+  private async ensureSchedulablePoolCache(): Promise<void> {
+    if (this.schedulablePoolCache !== null) return;
+    const repo = this.ctx.db.getRepository('schedulable_pools');
+    const rows = (await repo.find({ paginate: false })) as any[];
+    this.schedulablePoolCache = new Map();
+    for (const r of rows) {
+      this.schedulablePoolCache.set(r.poolId, {
+        poolId: r.poolId,
+        poolName: r.poolName || '',
+        osmCategory: r.osmCategory || 'ALL',
+        isActive: r.isActive !== false,
       });
     }
   }

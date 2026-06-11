@@ -4,6 +4,7 @@ export type {
   CalendarException,
   WorkCalendarDay,
   LineSelectWeights,
+  SchedulablePool,
 } from './RuleEngine';
 
 export { CapacityPool } from './CapacityPool';

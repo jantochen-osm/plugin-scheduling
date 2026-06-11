@@ -166,12 +166,20 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   if (!strategyParam || strategyParam === 'EE')  strategies.push(new EEStrategy());
   if (!strategyParam || strategyParam === 'ESG') strategies.push(new ESGStrategy());
 
+  // ── 4.5 预加载可排产订单池（一次性 DB 查询，后续全走内存 Set）────────
+  ruleEngine.invalidateCache(); // 确保每次排产都读取最新配置
+  const schedulablePoolSet = new Set<string>();
+  for (const strategy of strategies) {
+    const pools = await ruleEngine.getSchedulablePools(strategy.name);
+    for (const p of pools) schedulablePoolSet.add(p.poolId);
+  }
+
   // ── 5. 逐策略执行 Pipeline + 预占 + 重排 ─────────────────────────────
   for (const strategy of strategies) {
     ctx.logger?.info?.(`[ReSchedule] --- Strategy: ${strategy.name} ---`);
 
     // 按策略过滤（EE/ESG 各有不同的 filterOrders 规则）
-    const candidateOrders = strategy.filterOrders(nonPinnedOrders);
+    const candidateOrders = strategy.filterOrders(nonPinnedOrders, schedulablePoolSet);
     ctx.logger?.info?.(`[ReSchedule]   Filtered non-pinned: ${candidateOrders.length}`);
     if (candidateOrders.length === 0) continue;
 

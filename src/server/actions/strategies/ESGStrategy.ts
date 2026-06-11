@@ -7,7 +7,6 @@
  *   4F3, 4F5 -> Trial lines, excluded
  */
 import type { SchedulingStrategy, SchedulingConfig } from './SchedulingStrategy';
-import { SCHEDULABLE_POOLS } from '../scheduling/config';
 
 const ESG_CONFIG: SchedulingConfig = {
   category: 'ESG',
@@ -30,9 +29,9 @@ export class ESGStrategy implements SchedulingStrategy {
 
   getConfig(): SchedulingConfig { return { ...ESG_CONFIG }; }
 
-  filterOrders(orders: any[]): any[] {
+  filterOrders(orders: any[], poolSet: Set<string>): any[] {
     return orders.filter(
-      (o) => o.osmCategory === 'ESG' && (SCHEDULABLE_POOLS as readonly string[]).includes(o.prodPoolId),
+      (o) => o.osmCategory === 'ESG' && poolSet.has(o.prodPoolId),
     );
   }
 

@@ -44,24 +44,6 @@ export function getTodayStr(): string {
   return MOCK_TODAY || formatDate(new Date());
 }
 
-// ── 有效订单池（EE 和 ESG 共享）────────────────────────────────────
-/**
- * 可参与排产的生产订单池白名单。
- *
- * 这些池子对应 3F / 4F 产线的装配工段，在 dn_operrouteline 中有完整的
- * UPH 路线数据。其他池子（SCD_Tooling_Non-Bond、V00896F_* 等）使用
- * Tooling / Bond Book 等不同工艺，无 UPH 数据，不应进入排产引擎。
- *
- * EE 和 ESG 共用同一份白名单。若某品类将来需要独立的池子配置，
- * 可在各自策略文件中覆盖，但默认来源始终是这里。
- */
-export const SCHEDULABLE_POOLS = [
-  'SC_YBSC_F3',
-  'SC_YBSC_HT',
-  'SCD_HT_CC',
-  'SCD_HT_F3',
-] as const;
-
 // ── 全局配置（策略无关的共享参数）─────────────────────────────────
 export const SCHEDULING_CONFIG = {
   /** CapacityPool 初始化时的兜底每日工时（来源：md_work_calendars） */

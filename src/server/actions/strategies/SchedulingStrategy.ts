@@ -66,10 +66,11 @@ export interface SchedulingStrategy {
 
   /**
    * 筛选候选订单
-   * @param orders 全量订单（已从 dn_production_order_ds 拉取）
+   * @param orders   全量订单（已从 dn_production_order_ds 拉取）
+   * @param poolSet  可排产订单池 ID 集合（由调用方一次性预加载）
    * @returns 该策略关注的订单子集
    */
-  filterOrders(orders: any[]): any[];
+  filterOrders(orders: any[], poolSet: Set<string>): any[];
 
   /**
    * 获取该品类的兜底产线（产品无工段映射时）

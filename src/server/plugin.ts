@@ -59,6 +59,19 @@ export class PluginSchedulingServer extends Plugin {
         ],
       });
     }
+
+    // 4. schedulable_pools
+    const SchedulablePools = db.getRepository('schedulable_pools');
+    if (SchedulablePools && (await SchedulablePools.count()) === 0) {
+      await SchedulablePools.create({
+        values: [
+          { poolId: 'SC_YBSC_F3', poolName: '3F 装配池', osmCategory: 'ALL', isActive: true, sort: 1 },
+          { poolId: 'SC_YBSC_HT', poolName: 'HT 装配池', osmCategory: 'ALL', isActive: true, sort: 2 },
+          { poolId: 'SCD_HT_CC',  poolName: 'HT CC 池',  osmCategory: 'ALL', isActive: true, sort: 3 },
+          { poolId: 'SCD_HT_F3',  poolName: 'HT F3 池',  osmCategory: 'ALL', isActive: true, sort: 4 },
+        ],
+      });
+    }
   }
 
   async load() {
@@ -120,6 +133,8 @@ export class PluginSchedulingServer extends Plugin {
     this.app.acl.allow('dn_production_order_ds', ['list', 'get'], 'loggedIn');
     // 「按日期自动计算」功能需要读取工作日历
     this.app.acl.allow('md_work_calendars', ['list', 'get'], 'loggedIn');
+    // 可排产订单池配置
+    this.app.acl.allow('schedulable_pools', ['list', 'get'], 'loggedIn');
   }
 }
 

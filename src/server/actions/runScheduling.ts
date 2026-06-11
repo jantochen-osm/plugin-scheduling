@@ -94,13 +94,22 @@ export async function runScheduling(ctx: Context) {
   const allExc: any[] = [];
   const allLineUtil: any[] = [];
 
+  // ── 2.5 预加载可排产订单池（一次性 DB 查询，后续全走内存 Set）────────
+  ruleEngine.invalidateCache(); // 确保每次排产都读取最新配置
+  const schedulablePoolSet = new Set<string>();
+  for (const strategy of strategies) {
+    const pools = await ruleEngine.getSchedulablePools(strategy.name);
+    for (const p of pools) schedulablePoolSet.add(p.poolId);
+  }
+  ctx.logger?.info?.(`[Init] Schedulable pools: ${[...schedulablePoolSet].join(', ')}`);
+
   // ── 3a. 预检：找出不被任何策略覆盖的订单（如池子不在白名单），提前记录 WARNING ──
   // 这类订单会被 strategy.filterOrders() 静默过滤，用户无法从结果中得知原因。
   // 在此提前生成异常，让它们出现在排产历史和结果弹窗的异常明细里。
   {
     const handledIds = new Set<string>();
     for (const strategy of strategies) {
-      for (const o of strategy.filterOrders(allOrders)) {
+      for (const o of strategy.filterOrders(allOrders, schedulablePoolSet)) {
         handledIds.add(o.prodId);
       }
     }
@@ -121,11 +130,13 @@ export async function runScheduling(ctx: Context) {
   }
 
   // ── 3. 逐策略执行排产 Pipeline ───────────────────────────────────
-  for (const strategy of strategies) {  
+  let validCount = 0;
+  for (const strategy of strategies) {
     ctx.logger?.info?.(`--- Strategy: ${strategy.name} ---`);
 
     // 按策略过滤订单
-    const candidateOrders = strategy.filterOrders(allOrders);
+    const candidateOrders = strategy.filterOrders(allOrders, schedulablePoolSet);
+    validCount += candidateOrders.length;
     ctx.logger?.info?.(`  Filtered: ${candidateOrders.length} orders`);
 
     // Step 2: 校验 & 富化
@@ -229,7 +240,6 @@ export async function runScheduling(ctx: Context) {
     })),
   };
   const runStatus = allExc.filter((e: any) => e.severity === 'BLOCKER').length === 0 ? 'SUCCESS' : 'PARTIAL';
-  const validCount = strategies.reduce((sum, s) => sum + s.filterOrders(allOrders).length, 0);
   try {
     await ctx.db.sequelize.query(
       `INSERT INTO schedule_runs

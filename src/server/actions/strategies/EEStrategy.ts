@@ -8,7 +8,6 @@
  */
 
 import type { SchedulingStrategy, SchedulingConfig } from './SchedulingStrategy';
-import { SCHEDULABLE_POOLS } from '../scheduling/config';
 
 const EE_CONFIG: SchedulingConfig = {
   category: 'EE',
@@ -34,10 +33,9 @@ export class EEStrategy implements SchedulingStrategy {
     return { ...EE_CONFIG };
   }
 
-  filterOrders(orders: any[]): any[] {
-    // 双重过滤：品类 + 订单池（池子定义见 scheduling/config.ts SCHEDULABLE_POOLS）
+  filterOrders(orders: any[], poolSet: Set<string>): any[] {
     return orders.filter(
-      (o) => o.osmCategory === 'EE' && (SCHEDULABLE_POOLS as readonly string[]).includes(o.prodPoolId),
+      (o) => o.osmCategory === 'EE' && poolSet.has(o.prodPoolId),
     );
   }
 
