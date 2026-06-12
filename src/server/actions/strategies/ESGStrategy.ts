@@ -13,7 +13,7 @@ const ESG_CONFIG: SchedulingConfig = {
   setupTimeHours: 0,
   jitBufferDays: 0,          // sequential mode: no JIT
   preferEarlyFinish: false,  // sequential mode: unused
-  fallbackLines: ['4F1', '4F2', '4F4', '4F6'],
+  fallbackLines: ['4F1', '4F2', '4F4', '4F6'], // 兜底产线（所有规则不命中时使用）
   lineSelectWeights: {
     capacity:      0.25,
     setupAffinity: 0.50,

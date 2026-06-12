@@ -72,6 +72,17 @@ export class PluginSchedulingServer extends Plugin {
         ],
       });
     }
+
+    // 5. esg_line_routing
+    const ESGRouting = db.getRepository('esg_line_routing');
+    if (ESGRouting && (await ESGRouting.count()) === 0) {
+      await ESGRouting.create({
+        values: [
+          { ruleName: 'AMZ-55前缀路由', ruleType: 'PREFIX', condition: 'AMZ-55-', lines: ['4F2'], isActive: true, sort: 1, remarks: 'Amazon AMZ-55- 前缀物料强制走 Chicha 线' },
+          { ruleName: '55-前缀路由',    ruleType: 'PREFIX', condition: '55-',    lines: ['4F2'], isActive: true, sort: 2, remarks: '55- 前缀物料强制走 Chicha 线' },
+        ],
+      });
+    }
   }
 
   async load() {
@@ -135,6 +146,8 @@ export class PluginSchedulingServer extends Plugin {
     this.app.acl.allow('md_work_calendars', ['list', 'get'], 'loggedIn');
     // 可排产订单池配置
     this.app.acl.allow('schedulable_pools', ['list', 'get'], 'loggedIn');
+    // ESG 产线路由规则
+    this.app.acl.allow('esg_line_routing', ['list', 'get'], 'loggedIn');
   }
 }
 

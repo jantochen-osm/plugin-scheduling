@@ -53,6 +53,15 @@ export interface SchedulablePool {
   isActive: boolean;
 }
 
+export interface ESGRoutingRule {
+  ruleName: string;
+  ruleType: 'PRODID' | 'PREFIX';
+  condition: string;
+  lines: string[];
+  sort: number;
+  isActive: boolean;
+}
+
 // ─── Engine 类 ───
 
 export class RuleEngine {
@@ -63,6 +72,7 @@ export class RuleEngine {
   private calendarExceptionCache: Map<string, CalendarException> | null = null;
   private workCalendarCache: Map<string, WorkCalendarDay> | null = null;
   private schedulablePoolCache: Map<string, SchedulablePool> | null = null;
+  private esgRoutingRules: ESGRoutingRule[] | null = null;
   private weights: LineSelectWeights;
 
   constructor(ctx: Context, weights?: Partial<LineSelectWeights>) {
@@ -110,12 +120,58 @@ export class RuleEngine {
     return all.filter(p => p.osmCategory === osmCategory || p.osmCategory === 'ALL');
   }
 
+  /**
+   * 解析 ESG 订单的产线路由
+   * 优先级：PRODID（单号精确匹配）> PREFIX（物料前缀）> CUSTOMER（客户映射）> fallback
+   */
+  async resolveESGLines(keyAccount: string, itemId: string, prodId: string): Promise<string[]> {
+    await this.ensureESGRoutingCache();
+    for (const rule of this.esgRoutingRules!) {
+      if (!rule.isActive) continue;
+      if (rule.ruleType === 'PRODID' && prodId === rule.condition) {
+        return [...rule.lines];
+      }
+      if (rule.ruleType === 'PREFIX' && itemId.toUpperCase().startsWith(rule.condition.toUpperCase())) {
+        return [...rule.lines];
+      }
+    }
+    // 查 customer_line_mapping
+    if (keyAccount) {
+      const mapping = await this.getCustomerLines(keyAccount);
+      if (mapping && mapping.assignedLines.length > 0) {
+        return [...mapping.assignedLines];
+      }
+    }
+    return this.getESGFallbackLines();
+  }
+
+  /**
+   * 批量预计算 ESG 产线路由（排产循环前调用一次）
+   * @returns Map<prodId, lines>，循环内直接查 Map，无需重复匹配
+   */
+  async precomputeESGRouting(orders: any[]): Promise<Map<string, string[]>> {
+    await this.ensureESGRoutingCache();
+    await this.ensureCustomerLineCache(); // 预加载客户映射缓存
+    const result = new Map<string, string[]>();
+    for (const mo of orders) {
+      const lines = await this.resolveESGLines(mo.keyAccount, mo.itemId, mo.prodId);
+      result.set(mo.prodId, lines);
+    }
+    return result;
+  }
+
+  /** ESG 兜底产线 */
+  getESGFallbackLines(): string[] {
+    return ['4F1', '4F2', '4F4', '4F6'];
+  }
+
   /** 强制刷新所有缓存 */
   invalidateCache(): void {
     this.customerLineCache = null;
     this.calendarExceptionCache = null;
     this.workCalendarCache = null;
     this.schedulablePoolCache = null;
+    this.esgRoutingRules = null;
   }
 
   // ─── 内部加载方法 ───
@@ -192,5 +248,19 @@ export class RuleEngine {
         isActive: r.isActive !== false,
       });
     }
+  }
+
+  private async ensureESGRoutingCache(): Promise<void> {
+    if (this.esgRoutingRules !== null) return;
+    const repo = this.ctx.db.getRepository('esg_line_routing');
+    const rows = (await repo.find({ paginate: false, sort: ['sort'] })) as any[];
+    this.esgRoutingRules = rows.map((r) => ({
+      ruleName: r.ruleName || '',
+      ruleType: r.ruleType,
+      condition: r.condition || '',
+      lines: Array.isArray(r.lines) ? r.lines : [],
+      sort: Number(r.sort) || 0,
+      isActive: r.isActive !== false,
+    }));
   }
 }

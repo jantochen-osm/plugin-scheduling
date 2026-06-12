@@ -5,6 +5,7 @@ export type {
   WorkCalendarDay,
   LineSelectWeights,
   SchedulablePool,
+  ESGRoutingRule,
 } from './RuleEngine';
 
 export { CapacityPool } from './CapacityPool';

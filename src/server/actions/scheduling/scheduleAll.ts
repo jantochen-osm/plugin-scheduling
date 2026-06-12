@@ -95,6 +95,12 @@ export async function scheduleAll(
 
   const weights = cfg.lineSelectWeights;
 
+  // ── Pre-compute ESG line routing (one-time, before main loop) ──────
+  let esgRoutingMap: Map<string, string[]> | undefined;
+  if (strategy.name === 'ESG') {
+    esgRoutingMap = await ruleEngine.precomputeESGRouting(sortedOrders);
+  }
+
   // ── Main loop: schedule each order ───────────────────────────────────
   for (const mo of sortedOrders) {
 
@@ -128,20 +134,16 @@ export async function scheduleAll(
 
       // ── allowed lines ──
       let allowedLines: string[];
-      if (mo.keyAccount) {
-        const mapping = await ruleEngine.getCustomerLines(mo.keyAccount);
-        allowedLines = (mapping && mapping.assignedLines.length > 0)
-          ? mapping.assignedLines
-          : strategy.getFallbackLines();
-      } else {
-        allowedLines = strategy.getFallbackLines();
-      }
-
-      // ESG material prefix routing: AMZ-55- / 55- -> 4F2 (Chicha)
       if (strategy.name === 'ESG') {
-        const itemId = mo.itemId || '';
-        if (/^(AMZ-55-|55-)/i.test(itemId)) {
-          allowedLines = ['4F2'];
+        allowedLines = esgRoutingMap!.get(mo.prodId) ?? ruleEngine.getESGFallbackLines();
+      } else {
+        if (mo.keyAccount) {
+          const mapping = await ruleEngine.getCustomerLines(mo.keyAccount);
+          allowedLines = (mapping && mapping.assignedLines.length > 0)
+            ? mapping.assignedLines
+            : strategy.getFallbackLines();
+        } else {
+          allowedLines = strategy.getFallbackLines();
         }
       }
 

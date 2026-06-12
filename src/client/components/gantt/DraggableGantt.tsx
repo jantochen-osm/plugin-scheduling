@@ -381,7 +381,7 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                     {record.itemId}
                   </Text>
                   {record.dlvDate && (
-                    <Text type="warning" style={{ fontSize: 10 }}> 82.53，
+                    <Text type="warning" style={{ fontSize: 10 }}>
                       🚚{dayjs(record.dlvDate).format('MM/DD')}
                     </Text>
                   )}
