@@ -55,7 +55,7 @@ export const AdjustDrawer: React.FC<AdjustDrawerProps> = ({
       url: 'esg_line_config:list',
       method: 'get',
       params: { paginate: false, sort: ['sort'] },
-    }).then((res) => {
+    }).then((res: any) => {
       const items = res?.data?.data || [];
       if (items.length > 0) {
         const lines = items
@@ -382,7 +382,7 @@ export const AdjustDrawer: React.FC<AdjustDrawerProps> = ({
               <DatePicker
                 size="small" format="YYYY-MM-DD" value={newDateInput}
                 placeholder="选择日期" style={{ width: 130 }}
-                onChange={val => setNewDateInput(val)}
+                onChange={(val: any) => setNewDateInput(val)}
                 disabledDate={(d: any) => {
                   const key = d?.format('YYYY-MM-DD');
                   const existingKeys = new Set([

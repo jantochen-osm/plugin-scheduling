@@ -30,62 +30,80 @@ export class PluginSchedulingServer extends Plugin {
   async install() {
     console.log('Seeding initial data for Task 1.1...');
     const db = this.app.db;
-    
-    // 1. production_stages
-    const ProductionStages = db.getRepository('production_stages');
-    if (ProductionStages && (await ProductionStages.count()) === 0) {
-      await ProductionStages.create({
-        values: [
-          { stageId: 'STAGE_001', stageName: 'Assembly', stageSequence: 1, remarks: 'SMT & Assembly' },
-          { stageId: 'STAGE_002', stageName: 'Package', stageSequence: 2, remarks: 'Packaging' },
-        ],
-      });
+
+    // 1. production_stages（表可能不存在，try-catch 保护）
+    try {
+      const ProductionStages = db.getRepository('production_stages');
+      if (ProductionStages && (await ProductionStages.count()) === 0) {
+        await ProductionStages.create({
+          values: [
+            { stageId: 'STAGE_001', stageName: 'Assembly', stageSequence: 1, remarks: 'SMT & Assembly' },
+            { stageId: 'STAGE_002', stageName: 'Package', stageSequence: 2, remarks: 'Packaging' },
+          ],
+        });
+      }
+    } catch (e: any) {
+      console.log('[Scheduling] production_stages seed skipped:', e?.message || e);
     }
 
-    // 2. customer_line_mapping
-    const CustomerLineMapping = db.getRepository('customer_line_mapping');
-    if (CustomerLineMapping && (await CustomerLineMapping.count()) === 0) {
-      await CustomerLineMapping.create({
-        values: [
-          { keyAccount: 'CUST_A', osmCategory: 'ESG', assignedLines: ['ESG_LINE_1'] },
-          { keyAccount: 'CUST_B', osmCategory: 'ESG', assignedLines: ['ESG_LINE_1', 'ESG_LINE_2'] },
-        ],
-      });
+    // 2. customer_line_mapping（真实客户→产线映射）
+    try {
+      const CustomerLineMapping = db.getRepository('customer_line_mapping');
+      if (CustomerLineMapping && (await CustomerLineMapping.count()) === 0) {
+        await CustomerLineMapping.create({
+          values: [
+            { keyAccount: 'Amazon',   osmCategory: 'ESG', assignedLines: ['4F1'],  remarks: 'Amazon 标准线' },
+            { keyAccount: 'Chicha',   osmCategory: 'ESG', assignedLines: ['4F2'],  remarks: 'Chicha 线（AMZ-55-/55- 前缀物料路由）' },
+            { keyAccount: 'Shure',    osmCategory: 'ESG', assignedLines: ['4F4'],  remarks: 'Shure 客户线' },
+            { keyAccount: 'Jano Life',osmCategory: 'ESG', assignedLines: ['4F6'],  remarks: 'Jano Life 客户线' },
+          ],
+        });
+      }
+    } catch (e: any) {
+      console.log('[Scheduling] customer_line_mapping seed skipped:', e?.message || e);
     }
 
     // 3. calendar_exceptions
-    const CalendarExceptions = db.getRepository('calendar_exceptions');
-    if (CalendarExceptions && (await CalendarExceptions.count()) === 0) {
-      await CalendarExceptions.create({
-        values: [
-          { exceptionDate: '2026-06-01', exceptionType: 'HOLIDAY', affectedLines: null, workHours: 0, setupTime: 0, remarks: 'Childrens Day' },
-          { exceptionDate: '2026-06-05', exceptionType: 'MAINTENANCE', affectedLines: ['3F3'], workHours: 8, setupTime: 0, remarks: 'Monthly maintenance' },
-          { exceptionDate: '2026-06-06', exceptionType: 'CHANGEOVER', affectedLines: ['1F1'], workHours: 10, setupTime: 120, remarks: 'Product switch' },
-        ],
-      });
+    try {
+      const CalendarExceptions = db.getRepository('calendar_exceptions');
+      if (CalendarExceptions && (await CalendarExceptions.count()) === 0) {
+        await CalendarExceptions.create({
+          values: [
+            { exceptionDate: '2026-06-01', exceptionType: 'HOLIDAY', affectedLines: null, workHours: 0, setupTime: 0, remarks: 'Childrens Day' },
+            { exceptionDate: '2026-06-05', exceptionType: 'MAINTENANCE', affectedLines: ['3F3'], workHours: 8, setupTime: 0, remarks: 'Monthly maintenance' },
+            { exceptionDate: '2026-06-06', exceptionType: 'CHANGEOVER', affectedLines: ['1F1'], workHours: 10, setupTime: 120, remarks: 'Product switch' },
+          ],
+        });
+      }
+    } catch (e: any) {
+      console.log('[Scheduling] calendar_exceptions seed skipped:', e?.message || e);
     }
 
     // 4. schedulable_pools
-    const SchedulablePools = db.getRepository('schedulable_pools');
-    if (SchedulablePools && (await SchedulablePools.count()) === 0) {
-      await SchedulablePools.create({
-        values: [
-          { poolId: 'SC_YBSC_F3', poolName: '3F 装配池', osmCategory: 'ALL', isActive: true, sort: 1 },
-          { poolId: 'SC_YBSC_HT', poolName: 'HT 装配池', osmCategory: 'ALL', isActive: true, sort: 2 },
-          { poolId: 'SCD_HT_CC',  poolName: 'HT CC 池',  osmCategory: 'ALL', isActive: true, sort: 3 },
-          { poolId: 'SCD_HT_F3',  poolName: 'HT F3 池',  osmCategory: 'ALL', isActive: true, sort: 4 },
-        ],
-      });
+    try {
+      const SchedulablePools = db.getRepository('schedulable_pools');
+      if (SchedulablePools && (await SchedulablePools.count()) === 0) {
+        await SchedulablePools.create({
+          values: [
+            { poolId: 'SC_YBSC_F3', poolName: '3F 装配池', osmCategory: 'ALL', isActive: true, sort: 1 },
+            { poolId: 'SC_YBSC_HT', poolName: 'HT 装配池', osmCategory: 'ALL', isActive: true, sort: 2 },
+            { poolId: 'SCD_HT_CC',  poolName: 'HT CC 池',  osmCategory: 'ALL', isActive: true, sort: 3 },
+            { poolId: 'SCD_HT_F3',  poolName: 'HT F3 池',  osmCategory: 'ALL', isActive: true, sort: 4 },
+          ],
+        });
+      }
+    } catch (e: any) {
+      console.log('[Scheduling] schedulable_pools seed skipped:', e?.message || e);
     }
 
-    // 5. esg_line_routing
+    // 5. esg_line_routing（真实前缀路由规则）
     try {
       const ESGRouting = db.getRepository('esg_line_routing');
       if (ESGRouting && (await ESGRouting.count()) === 0) {
         await ESGRouting.create({
           values: [
-            { ruleName: 'AMZ-55前缀路由', ruleType: 'PREFIX', condition: 'AMZ-55-', lines: ['4F2'], isActive: true, sort: 1, remarks: 'Amazon AMZ-55- 前缀物料强制走 Chicha 线' },
-            { ruleName: '55-前缀路由',    ruleType: 'PREFIX', condition: '55-',    lines: ['4F2'], isActive: true, sort: 2, remarks: '55- 前缀物料强制走 Chicha 线' },
+            { ruleName: 'AMZ-55前缀路由', ruleType: 'PREFIX', condition: 'AMZ-55-', lines: ['4F1'], isActive: true, sort: 1, remarks: 'Amazon AMZ-55- 前缀物料路由' },
+            { ruleName: '55-前缀路由',    ruleType: 'PREFIX', condition: '55-',    lines: ['4F1'], isActive: true, sort: 2, remarks: '55- 前缀物料路由' },
           ],
         });
       }

@@ -23,13 +23,13 @@ export async function validateSchedule(ctx: Context) {
   const resultRepo = ctx.db.getRepository('schedule_results_v2');
   const excRepo = ctx.db.getRepository('schedule_exceptions_v2');
   const calRepo = ctx.db.getRepository('md_work_calendars');
-  const routeRepo = ctx.db.getRepository('route_operation');
+  const routeRepo = ctx.db.getRepository('dn_operrouteline');
 
   // 加载数据
   const results = await resultRepo.find({ paginate: false }) as any[];
   const exceptions = await excRepo.find({ paginate: false }) as any[];
   const calRows = await calRepo.find({ paginate: false }) as any[];
-  const routeRows = await routeRepo.find({ paginate: false }) as any[];
+  const routeRows = await routeRepo.find({ paginate: false, filter: { status: 1 } }) as any[];
 
   // 构建日历 Map: dateStr -> { workHours, isSchedulable }
   const calendarMap = new Map<string, { workHours: number; isSchedulable: boolean }>();
@@ -40,13 +40,14 @@ export async function validateSchedule(ctx: Context) {
     }
   }
 
-  // 构建路线 Map: itemId -> { uph, headcount }
+  // 构建路线 Map: itemId -> { uph }
+  // dn_operrouteline 字段: item, oper, erpupph, planninglabor, status
   const routeMap = new Map<string, { uph: number }>();
   for (const r of routeRows) {
-    const opName = (r.operation_name || '').toLowerCase();
-    const uph = Number(r.erp_uph) || 0;
+    const opName = (r.oper || '').toLowerCase();
+    const uph = Number(r.erpupph) || 0;
     if (opName.includes('assembly') && uph > 0) {
-      routeMap.set(r.fg_item_code, { uph });
+      routeMap.set(r.item, { uph });
     }
   }
 

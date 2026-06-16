@@ -164,7 +164,7 @@ export async function reScheduleAfterAdjust(ctx: Context) {
   // ── 4. 确定策略 ───────────────────────────────────────────────────────
   const strategies: SchedulingStrategy[] = [];
   if (!strategyParam || strategyParam === 'EE')  strategies.push(new EEStrategy());
-  if (!strategyParam || strategyParam === 'ESG') strategies.push(new ESGStrategy());
+  if (!strategyParam || strategyParam === 'ESG') strategies.push(new ESGStrategy(ruleEngine));
 
   // ── 4.5 预加载可排产订单池（一次性 DB 查询，后续全走内存 Set）────────
   ruleEngine.invalidateCache(); // 确保每次排产都读取最新配置

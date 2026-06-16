@@ -21,7 +21,7 @@ interface SchedulingGanttProps {
 const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
   const [rawRecords,     setRawRecords]     = useState<any[]>([]);
   const [loading,        setLoading]        = useState(false);
-  const [viewMode]      = useState<'grouped'>('grouped');
+  const [viewMode]      = useState<'grouped' | 'flat'>('grouped');
   const [factoryCalendar, setFactoryCalendar] = useState<Record<string, any>>({});
   const [currentRunId,   setCurrentRunId]   = useState<string | undefined>(runId);
 

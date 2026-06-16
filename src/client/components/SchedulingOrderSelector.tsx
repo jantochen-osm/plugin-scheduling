@@ -388,7 +388,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
                   size="small"
                   format="YYYY-MM-DD"
                   value={schedStartDate}
-                  onChange={(val) => setSchedStartDate(val || dayjs())}
+                  onChange={(val: any) => setSchedStartDate(val || dayjs())}
                   allowClear={false}
                   style={{ width: 130 }}
                 />
