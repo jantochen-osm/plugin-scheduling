@@ -34,10 +34,28 @@ const COLORS = {
   textTer:    'rgba(255,255,255,0.35)',
 };
 
-const LINE_COLORS = {
-  '3F3': '#4f8cff', '3F4': '#36cfc9', '3F5': '#b37feb', '3F6': '#ff85c0',
-  '4F1': '#ff7a45', '4F2': '#ffc53d', '4F4': '#73d13d', '4F6': '#40a9ff',
-};
+// ESG 产线颜色（动态加载，初始值与 LINE_COLORS 一致作为降级）
+let ESG_LINE_COLORS = { ...LINE_COLORS };
+
+// 从 API 加载 ESG 产线颜色配置
+async function loadESGColors() {
+  try {
+    const res = await api.request({
+      url: 'esg_line_config:list',
+      method: 'get',
+      params: { paginate: false, sort: ['sort'] },
+    });
+    const items = res?.data?.data || [];
+    if (items.length > 0) {
+      ESG_LINE_COLORS = { ...LINE_COLORS }; // 保留 EE 颜色
+      for (const item of items) {
+        if (item.isActive) ESG_LINE_COLORS[item.lineCode] = item.color || '#40a9ff';
+      }
+    }
+  } catch {
+    // 降级：保持硬编码默认值
+  }
+}
 
 // 日期类型颜色：工作日 / 周末
 const DAY_TYPE_COLORS = {
@@ -76,7 +94,7 @@ function GlassCard({ title, extra, children, style }) {
 
 // ─── Utilization Bar ─────────────────────────────────────────────────────────
 function UtilBar({ line, data }) {
-  const color = LINE_COLORS[line] || COLORS.primary;
+  const color = ESG_LINE_COLORS[line] || COLORS.primary;
   const rate  = data.utilizationRate || 0;
   return React.createElement('div', { style: { marginBottom: 16 } },
     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: 4 } },
@@ -148,7 +166,7 @@ function ExcBreakdown({ data }) {
 // ─── 迷你甘特条（每日计划小图）────────────────────────────────────────────────
 function MiniGantt({ record, globalDates, barWidth }) {
   const plan        = record.dailyPlan  || {};
-  const lineColor   = LINE_COLORS[record.chosenLine] || COLORS.primary;
+  const lineColor   = ESG_LINE_COLORS[record.chosenLine] || COLORS.primary;
   const startStr    = toDateStr(record.startDate);
   const finishStr   = toDateStr(record.finishDate);
   const maxQ        = Math.max(...globalDates.map(d => plan[d] || 0), 1);
@@ -212,6 +230,11 @@ function SchedulingDashboard() {
   const [exceptions,    setExceptions]    = useState([]);
   const [loading,       setLoading]       = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // 加载 ESG 产线颜色配置
+  useEffect(() => {
+    loadESGColors();
+  }, []);
 
   // ── 全局日期序列（方案A）：
   //    合并所有订单的 startDate–finishDate 形成连续日期轴，包含范围外的日期用灰色显示
@@ -287,8 +310,8 @@ function SchedulingDashboard() {
     {
       title: '产线', dataIndex: 'chosenLine', width: 60,
       render: v => React.createElement(Tag, {
-        color: LINE_COLORS[v] ? undefined : 'default',
-        style: { borderRadius: 4, fontWeight: 600, background: LINE_COLORS[v] || undefined, color: LINE_COLORS[v] ? '#000' : undefined },
+        color: ESG_LINE_COLORS[v] ? undefined : 'default',
+        style: { borderRadius: 4, fontWeight: 600, background: ESG_LINE_COLORS[v] || undefined, color: ESG_LINE_COLORS[v] ? '#000' : undefined },
       }, v),
     },
     { title: 'UPH', dataIndex: 'uph', width: 60, align: 'right' },

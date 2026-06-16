@@ -74,6 +74,8 @@ export interface SchedulingStrategy {
 
   /**
    * 获取该品类的兜底产线（产品无工段映射时）
+   * 返回同步数组。ESG 产线的动态加载由调用方通过 ruleEngine.getESGFallbackLines() 处理,
+   * 不经过此接口。
    */
   getFallbackLines(): string[];
 

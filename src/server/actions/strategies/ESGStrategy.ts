@@ -5,15 +5,19 @@
  *   4F1 -> Amazon standard; 4F2 -> AMZ-55- / 55- prefix (Chicha line)
  *   4F4 -> Shure; 4F6 -> Jano Life
  *   4F3, 4F5 -> Trial lines, excluded
+ *
+ * 产线配置从 esg_line_config 表动态加载，不再硬编码。
+ * customer_line_mapping 负责客户→产线映射。
  */
 import type { SchedulingStrategy, SchedulingConfig } from './SchedulingStrategy';
+import type { RuleEngine } from '../../engines';
 
 const ESG_CONFIG: SchedulingConfig = {
   category: 'ESG',
   setupTimeHours: 0,
   jitBufferDays: 0,          // sequential mode: no JIT
   preferEarlyFinish: false,  // sequential mode: unused
-  fallbackLines: ['4F1', '4F2', '4F4', '4F6'], // 兜底产线（所有规则不命中时使用）
+  fallbackLines: [],         // 不再使用，产线列表从 esg_line_config 表动态加载
   lineSelectWeights: {
     capacity:      0.25,
     setupAffinity: 0.50,
@@ -21,11 +25,15 @@ const ESG_CONFIG: SchedulingConfig = {
     continuity:    0.15,
   },
   maxHeadcountFactor: 4,
-  // earlyStartMaxDays removed (sequential mode has no early-start concept)
 };
 
 export class ESGStrategy implements SchedulingStrategy {
   readonly name = 'ESG';
+  private ruleEngine: RuleEngine;
+
+  constructor(ruleEngine: RuleEngine) {
+    this.ruleEngine = ruleEngine;
+  }
 
   getConfig(): SchedulingConfig { return { ...ESG_CONFIG }; }
 
@@ -35,7 +43,12 @@ export class ESGStrategy implements SchedulingStrategy {
     );
   }
 
-  getFallbackLines(): string[] { return [...ESG_CONFIG.fallbackLines]; }
+  /**
+   * 获取 ESG 兜底产线
+   * 注意：此方法返回空数组占位。实际 ESG 产线列表由调用方通过
+   * ruleEngine.getESGFallbackLines() 从 esg_line_config 表动态获取。
+   */
+  getFallbackLines(): string[] { return []; }
 
   getActiveStages(): string[] { return ['Assembly']; }
 

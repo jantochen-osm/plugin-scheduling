@@ -4,7 +4,7 @@ import {
   Alert, Divider, Space, Button, Tag, Typography, Tooltip,
   Switch, Popconfirm, Modal, message,
 } from 'antd';
-import { formatNum, ESG_LINES, dayjs } from './utils';
+import { formatNum, dayjs } from './utils';
 import { useCalcDailyPlan } from './useCalcDailyPlan';
 
 const { Text } = Typography;
@@ -28,6 +28,10 @@ interface AdjustDrawerProps {
  *  - 保存后可选触发重算
  *  - 已调整记录可解锁
  */
+
+// ESG 产线列表降级值
+const ESG_LINES_FALLBACK = ['4F1', '4F2', '4F4', '4F6'];
+
 export const AdjustDrawer: React.FC<AdjustDrawerProps> = ({
   open, record, onClose, onSaved, api,
 }) => {
@@ -42,6 +46,26 @@ export const AdjustDrawer: React.FC<AdjustDrawerProps> = ({
   const [autoReSchedule, setAutoReSchedule] = useState(false);
   /** 标记哪些日期是「按日期计算」自动生成的（用于展示「自动」tag） */
   const [autoDates,     setAutoDates]     = useState<Set<string>>(new Set());
+  // ESG 产线列表（动态加载）
+  const [esgLines,      setEsgLines]      = useState<string[]>(ESG_LINES_FALLBACK);
+
+  // 加载 ESG 产线配置
+  useEffect(() => {
+    api.request({
+      url: 'esg_line_config:list',
+      method: 'get',
+      params: { paginate: false, sort: ['sort'] },
+    }).then((res) => {
+      const items = res?.data?.data || [];
+      if (items.length > 0) {
+        const lines = items
+          .filter((i: any) => i.isActive)
+          .sort((a: any, b: any) => (a.sort || 0) - (b.sort || 0))
+          .map((i: any) => i.lineCode);
+        if (lines.length > 0) setEsgLines(lines);
+      }
+    }).catch(() => {/* 降级：保持默认值 */});
+  }, [api]);
 
   // ── 初始化 ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -243,7 +267,7 @@ export const AdjustDrawer: React.FC<AdjustDrawerProps> = ({
 
         <Form.Item name="chosenLine" label="换产线">
           <Select
-            options={ESG_LINES.map(l => ({ value: l, label: l }))}
+            options={esgLines.map(l => ({ value: l, label: l }))}
             placeholder="选择产线" style={{ width: 160 }}
           />
         </Form.Item>

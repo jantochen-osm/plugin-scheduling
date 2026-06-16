@@ -107,9 +107,7 @@ const CapacityDetailCard = ({ date, detail, isGlobalRest }) => {
 // ============================================================================
 // 子组件：调整 Drawer
 // ============================================================================
-const ESG_LINES = ['4F1', '4F2', '4F4', '4F6'];
-
-const AdjustDrawer = ({ open, record, onClose, onSaved }) => {
+const AdjustDrawer = ({ open, record, onClose, onSaved, esgLines }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   // 每日产量补丁：{ date: inputQty }（含原有日期的修改 + 用户新增的日期）
@@ -235,7 +233,7 @@ const AdjustDrawer = ({ open, record, onClose, onSaved }) => {
 
         <Form.Item name="chosenLine" label="换产线">
           <Select
-            options={ESG_LINES.map(l => ({ value: l, label: l }))}
+            options={esgLines.map(l => ({ value: l, label: l }))}
             placeholder="选择产线"
             style={{ width: 160 }}
           />
@@ -459,10 +457,30 @@ const ProductionScheduleMatrix = () => {
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState('grouped'); 
   const [factoryCalendar, setFactoryCalendar] = useState({});
+  const [esgLines, setEsgLines] = useState(['4F1', '4F2', '4F4', '4F6']); // 初始降级值
 
   // 调整 Drawer 状态
   const [drawerOpen, setDrawerOpen]   = useState(false);
   const [drawerRecord, setDrawerRecord] = useState(null);
+
+  // 加载 ESG 产线配置
+  useEffect(() => {
+    const api = getApi();
+    api.request({
+      url: 'esg_line_config:list',
+      method: 'get',
+      params: { paginate: false, sort: ['sort'] },
+    }).then((res) => {
+      const items = res?.data?.data || [];
+      if (items.length > 0) {
+        const lines = items
+          .filter((i) => i.isActive)
+          .sort((a, b) => (a.sort || 0) - (b.sort || 0))
+          .map((i) => i.lineCode);
+        if (lines.length > 0) setEsgLines(lines);
+      }
+    }).catch(() => {/* 降级：保持硬编码默认值 */});
+  }, []);
 
   const openDrawer = useCallback((record) => {
     setDrawerRecord(record);
@@ -883,6 +901,7 @@ const ProductionScheduleMatrix = () => {
         record={drawerRecord}
         onClose={closeDrawer}
         onSaved={fetchScheduleData}
+        esgLines={esgLines}
       />
     </div>
   );

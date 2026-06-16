@@ -13,13 +13,18 @@ import { deleteVersion } from './actions/deleteVersion';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
-    // Collections (production_stages, customer_line_mapping,
-    // calendar_exceptions) are created via NocoBase admin UI or REST API.
-    // They are NOT registered here via db.import() to ensure they appear in the
-    // admin collection manager as user-managed collections.
-    //
-    // To create them: POST /api/collections:create with the collection schema.
-    // See src/server/collections/*.ts for field definitions.
+    // 在 loadCollections() 之前补全已有表的缺失字段
+    // esg_line_routing 表已存在但缺少 NocoBase ORM 默认要求的 createdAt/updatedAt
+    try {
+      await this.app.db.sequelize.query(
+        `ALTER TABLE esg_line_routing ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`
+      );
+      await this.app.db.sequelize.query(
+        `ALTER TABLE esg_line_routing ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`
+      );
+    } catch (e: any) {
+      this.app.logger?.warn?.(`[Scheduling] beforeLoad DDL skipped: ${e?.message || e}`);
+    }
   }
 
   async install() {
@@ -74,14 +79,35 @@ export class PluginSchedulingServer extends Plugin {
     }
 
     // 5. esg_line_routing
-    const ESGRouting = db.getRepository('esg_line_routing');
-    if (ESGRouting && (await ESGRouting.count()) === 0) {
-      await ESGRouting.create({
-        values: [
-          { ruleName: 'AMZ-55前缀路由', ruleType: 'PREFIX', condition: 'AMZ-55-', lines: ['4F2'], isActive: true, sort: 1, remarks: 'Amazon AMZ-55- 前缀物料强制走 Chicha 线' },
-          { ruleName: '55-前缀路由',    ruleType: 'PREFIX', condition: '55-',    lines: ['4F2'], isActive: true, sort: 2, remarks: '55- 前缀物料强制走 Chicha 线' },
-        ],
-      });
+    try {
+      const ESGRouting = db.getRepository('esg_line_routing');
+      if (ESGRouting && (await ESGRouting.count()) === 0) {
+        await ESGRouting.create({
+          values: [
+            { ruleName: 'AMZ-55前缀路由', ruleType: 'PREFIX', condition: 'AMZ-55-', lines: ['4F2'], isActive: true, sort: 1, remarks: 'Amazon AMZ-55- 前缀物料强制走 Chicha 线' },
+            { ruleName: '55-前缀路由',    ruleType: 'PREFIX', condition: '55-',    lines: ['4F2'], isActive: true, sort: 2, remarks: '55- 前缀物料强制走 Chicha 线' },
+          ],
+        });
+      }
+    } catch (e: any) {
+      console.log('[Scheduling] esg_line_routing seed skipped:', e?.message || e);
+    }
+
+    // 6. esg_line_config（每条产线一个 item）
+    try {
+      const ESGLineConfig = db.getRepository('esg_line_config');
+      if (ESGLineConfig && (await ESGLineConfig.count()) === 0) {
+        await ESGLineConfig.create({
+          values: [
+            { lineCode: '4F1', type: 'standard',     color: '#ff7a45', isActive: true, sort: 1, remarks: 'Amazon 标准线' },
+            { lineCode: '4F2', type: 'prefix_route', color: '#ffc53d', isActive: true, sort: 2, remarks: 'Chicha 线（AMZ-55-/55- 前缀物料路由）' },
+            { lineCode: '4F4', type: 'standard',     color: '#73d13d', isActive: true, sort: 3, remarks: 'Shure 客户线' },
+            { lineCode: '4F6', type: 'standard',     color: '#40a9ff', isActive: true, sort: 4, remarks: 'Jano Life 客户线' },
+          ],
+        });
+      }
+    } catch (e: any) {
+      console.log('[Scheduling] esg_line_config seed skipped:', e?.message || e);
     }
   }
 
@@ -89,6 +115,35 @@ export class PluginSchedulingServer extends Plugin {
     // ── 服务启动时自动补建字段（幂等，IF NOT EXISTS）────────────────────
     // 不依赖 API 首次调用，确保服务启动即可用
     const ddlStatements = [
+      // ── ESG 产线配置表（如不存在则创建）────────────────────────────────
+      `CREATE TABLE IF NOT EXISTS esg_line_config (
+        id SERIAL PRIMARY KEY,
+        "lineCode" VARCHAR(50) UNIQUE NOT NULL,
+        type VARCHAR(20) DEFAULT 'standard',
+        color VARCHAR(20) DEFAULT '#40a9ff',
+        "isActive" BOOLEAN DEFAULT true,
+        sort INTEGER DEFAULT 0,
+        remarks TEXT,
+        "createdAt" TIMESTAMP WITH TIME ZONE,
+        "updatedAt" TIMESTAMP WITH TIME ZONE
+      )`,
+      `CREATE TABLE IF NOT EXISTS esg_line_routing (
+        id SERIAL PRIMARY KEY,
+        "ruleName" VARCHAR(100),
+        "ruleType" VARCHAR(20),
+        condition VARCHAR(200),
+        lines JSONB,
+        "isActive" BOOLEAN DEFAULT true,
+        sort INTEGER DEFAULT 0,
+        remarks TEXT,
+        "createdAt" TIMESTAMP WITH TIME ZONE,
+        "updatedAt" TIMESTAMP WITH TIME ZONE
+      )`,
+      // ── 补全已有表的缺失字段 ──────────────────────────────────────────
+      // esg_line_routing 表已存在但缺少 createdAt/updatedAt（NocoBase ORM 默认引用）
+      `ALTER TABLE esg_line_routing ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`,
+      `ALTER TABLE esg_line_routing ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`,
+      // ── 现有字段补建 ──────────────────────────────────────────────────
       `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "pinnedBy" varchar(100)`,
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "runType" varchar(20) DEFAULT 'FULL'`,
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "pinnedCount" integer DEFAULT 0`,
@@ -148,6 +203,8 @@ export class PluginSchedulingServer extends Plugin {
     this.app.acl.allow('schedulable_pools', ['list', 'get'], 'loggedIn');
     // ESG 产线路由规则
     this.app.acl.allow('esg_line_routing', ['list', 'get'], 'loggedIn');
+    // ESG 产线配置
+    this.app.acl.allow('esg_line_config', ['list', 'get'], 'loggedIn');
   }
 }
 

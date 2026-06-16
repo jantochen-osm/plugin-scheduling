@@ -62,7 +62,23 @@ export interface ESGRoutingRule {
   isActive: boolean;
 }
 
-// ─── Engine 类 ───
+/** 单条 ESG 产线配置（esg_line_config 表的一条记录） */
+export interface ESGLineItem {
+  lineCode: string;
+  type: string;
+  color: string;
+  isActive: boolean;
+  sort: number;
+  remarks?: string;
+}
+
+/** ESG 产线配置（从 esg_line_config 表加载） */
+export interface ESGLinesConfig {
+  /** 产线列表，每条产线一个 item */
+  lines: ESGLineItem[];
+}
+
+// ─── Engine?───
 
 export class RuleEngine {
   private ctx: Context;
@@ -73,6 +89,7 @@ export class RuleEngine {
   private workCalendarCache: Map<string, WorkCalendarDay> | null = null;
   private schedulablePoolCache: Map<string, SchedulablePool> | null = null;
   private esgRoutingRules: ESGRoutingRule[] | null = null;
+  private esgLinesConfig: ESGLinesConfig | null = null;
   private weights: LineSelectWeights;
 
   constructor(ctx: Context, weights?: Partial<LineSelectWeights>) {
@@ -107,6 +124,28 @@ export class RuleEngine {
   /** 获取选线权重 */
   getLineSelectWeights(): LineSelectWeights {
     return { ...this.weights };
+  }
+
+  /**
+   * 获取 ESG 产线配置（从 esg_line_config 表加载，带缓存）
+   * 返回 ESGLineItem 数组，每条产线一个 item
+   */
+  async getESGLinesConfig(): Promise<ESGLinesConfig> {
+    await this.ensureESGLinesConfigCache();
+    return this.esgLinesConfig!;
+  }
+
+  /**
+   * 获取 ESG 产线颜色映射（供客户端动态渲染）
+   * @returns { lineCode: color } 的映射，仅包含 isActive=true 的产线
+   */
+  async getESGLineColorMap(): Promise<Record<string, string>> {
+    await this.ensureESGLinesConfigCache();
+    const map: Record<string, string> = {};
+    for (const item of this.esgLinesConfig!.lines) {
+      if (item.isActive) map[item.lineCode] = item.color;
+    }
+    return map;
   }
 
   /**
@@ -160,18 +199,23 @@ export class RuleEngine {
     return result;
   }
 
-  /** ESG 兜底产线 */
-  getESGFallbackLines(): string[] {
-    return ['4F1', '4F2', '4F4', '4F6'];
+  /** ESG 兜底产线（从 esg_line_config 表读取，按 sort 排序） */
+  async getESGFallbackLines(): Promise<string[]> {
+    await this.ensureESGLinesConfigCache();
+    return this.esgLinesConfig!.lines
+      .filter((l) => l.isActive)
+      .sort((a, b) => a.sort - b.sort)
+      .map((l) => l.lineCode);
   }
 
-  /** 强制刷新所有缓存 */
+  /** 强制刷新所有缓?*/
   invalidateCache(): void {
     this.customerLineCache = null;
     this.calendarExceptionCache = null;
     this.workCalendarCache = null;
     this.schedulablePoolCache = null;
     this.esgRoutingRules = null;
+    this.esgLinesConfig = null;
   }
 
   // ─── 内部加载方法 ───
@@ -262,5 +306,38 @@ export class RuleEngine {
       sort: Number(r.sort) || 0,
       isActive: r.isActive !== false,
     }));
+  }
+
+  private async ensureESGLinesConfigCache(): Promise<void> {
+    if (this.esgLinesConfig !== null) return;
+    const defaults: ESGLinesConfig = {
+      lines: [
+        { lineCode: '4F1', type: 'standard',     color: '#ff7a45', isActive: true, sort: 1 },
+        { lineCode: '4F2', type: 'prefix_route', color: '#ffc53d', isActive: true, sort: 2 },
+        { lineCode: '4F4', type: 'standard',     color: '#73d13d', isActive: true, sort: 3 },
+        { lineCode: '4F6', type: 'standard',     color: '#40a9ff', isActive: true, sort: 4 },
+      ],
+    };
+    try {
+      const repo = this.ctx.db.getRepository('esg_line_config');
+      const rows = (await repo.find({ paginate: false, sort: ['sort'] })) as any[];
+      if (rows.length > 0) {
+        this.esgLinesConfig = {
+          lines: rows.map((r) => ({
+            lineCode: r.lineCode,
+            type: r.type || 'standard',
+            color: r.color || '#40a9ff',
+            isActive: r.isActive !== false,
+            sort: Number(r.sort) || 0,
+            remarks: r.remarks,
+          })),
+        };
+      } else {
+        this.esgLinesConfig = defaults;
+      }
+    } catch {
+      // esg_line_config table not found or other error: use hardcoded defaults
+      this.esgLinesConfig = defaults;
+    }
   }
 }

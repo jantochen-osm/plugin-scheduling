@@ -135,7 +135,7 @@ export async function scheduleAll(
       // ── allowed lines ──
       let allowedLines: string[];
       if (strategy.name === 'ESG') {
-        allowedLines = esgRoutingMap!.get(mo.prodId) ?? ruleEngine.getESGFallbackLines();
+        allowedLines = esgRoutingMap!.get(mo.prodId) ?? await ruleEngine.getESGFallbackLines();
       } else {
         if (mo.keyAccount) {
           const mapping = await ruleEngine.getCustomerLines(mo.keyAccount);

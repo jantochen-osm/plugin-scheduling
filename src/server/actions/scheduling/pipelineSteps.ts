@@ -139,6 +139,7 @@ export function step3_sort(orders: any[]) {
 /**
  * 从 customer_line_mapping 收集所有本次排产涉及的产线；
  * 同时合并策略 fallbackLines，确保物料前缀路由等非客户映射产线也被纳入产能池。
+ * ESG 产线从 esg_line_config 表动态获取。
  */
 export async function step4_collectLines(
   orders: any[],
@@ -157,9 +158,12 @@ export async function step4_collectLines(
     }
   }
 
-  // 2. 始终合并 fallbackLines（如 ESG 4F2 可能来自物料前缀路由而非客户映射）
-  for (const line of strategy.getFallbackLines()) {
-    lineSet.add(line);
+  // 2. 合并 fallbackLines（ESG 从 DB 动态获取，EE 从策略同步获取）
+  if (strategy.name === 'ESG') {
+    const esgLines = await ruleEngine.getESGFallbackLines();
+    for (const line of esgLines) lineSet.add(line);
+  } else {
+    for (const line of strategy.getFallbackLines()) lineSet.add(line);
   }
 
   return [...lineSet].sort();

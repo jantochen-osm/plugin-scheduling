@@ -59,11 +59,15 @@ export async function runScheduling(ctx: Context) {
   // ── scope=current：从当前排产结果表获取产品 ID 范围 ────────────────
   if (scopeCurrent && !prodIds) {
     try {
-      // 收集当次策略覆盖的产线
+      // 收集当次策略覆盖的产线（ESG 从 DB 动态获取，EE 从策略硬编码获取）
       const tmpStrategies: SchedulingStrategy[] = [];
       if (!strategyParam || strategyParam === 'EE')  tmpStrategies.push(new EEStrategy());
-      if (!strategyParam || strategyParam === 'ESG') tmpStrategies.push(new ESGStrategy());
-      const scopeLines = tmpStrategies.flatMap((s) => s.getFallbackLines());
+      if (!strategyParam || strategyParam === 'ESG') tmpStrategies.push(new ESGStrategy(ruleEngine));
+      const esgLines = await ruleEngine.getESGFallbackLines();
+      const eeLines  = tmpStrategies
+        .filter((s) => s.name === 'EE')
+        .flatMap((s) => s.getFallbackLines());
+      const scopeLines = [...new Set([...esgLines, ...eeLines])];
       const scopeLineList = scopeLines.map((l) => `'${l}'`).join(', ');
 
       const [scopeRows] = await ctx.db.sequelize.query(
@@ -82,7 +86,7 @@ export async function runScheduling(ctx: Context) {
 
   const strategies: SchedulingStrategy[] = [];
   if (!strategyParam || strategyParam === 'EE')  strategies.push(new EEStrategy());
-  if (!strategyParam || strategyParam === 'ESG') strategies.push(new ESGStrategy());
+  if (!strategyParam || strategyParam === 'ESG') strategies.push(new ESGStrategy(ruleEngine));
 
   ctx.logger?.info?.(`[Init] Strategies: ${strategies.map((s) => s.name).join(', ')} | Mode: ${runMode}${prodIds ? ` (${prodIds.length} orders)` : ''}`);
 
