@@ -10,6 +10,7 @@ import { reScheduleAfterAdjust } from './actions/reScheduleAfterAdjust';
 import { unlockAllByRunId } from './actions/unlockAllByRunId';
 import { getWorkdays } from './actions/getWorkdays';
 import { deleteVersion } from './actions/deleteVersion';
+import { exportEsgExcel } from './actions/exportEsgExcel';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -170,6 +171,11 @@ export class PluginSchedulingServer extends Plugin {
       // 此表由 raw SQL 创建时缺少这两列，导致 list API 报 "Invalid SQL column or table reference"
       `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`,
       `ALTER TABLE schedule_results_v2 ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`,
+      // schedule_exceptions_v2 / schedule_runs 同样缺少 createdAt/updatedAt（NocoBase ORM 自动引用）
+      `ALTER TABLE schedule_exceptions_v2 ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`,
+      `ALTER TABLE schedule_exceptions_v2 ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "createdAt" timestamp with time zone`,
+      `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "updatedAt" timestamp with time zone`,
       // ── 版本管理新增字段（strategy / startDate / versionName）─────────────
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS strategy VARCHAR(20) DEFAULT ''`,
       `ALTER TABLE schedule_runs ADD COLUMN IF NOT EXISTS "startDate" VARCHAR(20) DEFAULT ''`,
@@ -199,6 +205,7 @@ export class PluginSchedulingServer extends Plugin {
         unlockAllByRunId,      // 批量解锁指定版本内的所有手工调整记录
         workdays: getWorkdays,  // 查询工作日历（前端按日期自动计算每日产量）
         deleteVersion,          // 删除指定版本的排产结果
+        exportEsgExcel,         // 导出 ESG 排产计划 Excel 文件
       },
     });
 
@@ -207,7 +214,7 @@ export class PluginSchedulingServer extends Plugin {
       'scheduling',
       ['run', 'validate', 'adjustResult', 'previewOrders',
        'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust', 'workdays',
-       'unlockAllByRunId', 'deleteVersion'],
+       'unlockAllByRunId', 'deleteVersion', 'exportEsgExcel'],
       'loggedIn',
     );
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');

@@ -94,7 +94,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
   const isFullMode     = selectedCount === 0;
 
   // ── 加载最近运行摘要 ─────────────────────────────────────────────────
-  const fetchLastRun = useCallback(async () => {
+  const fetchLastRun = useCallback(async () => {  
     try {
       const res = await api.request({ url: 'scheduling:lastRun', method: 'get' });
       const record = res?.data?.data?.data || res?.data?.data || null;

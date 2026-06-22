@@ -79,7 +79,7 @@ function callOpenAI(
       max_completion_tokens: 2000,
     });
 
-    const timer = setTimeout(() => {
+    const timer = setTimeout(() => {  
       req.destroy();
       reject(new Error('OpenAI request timeout'));
     }, timeoutMs);
@@ -98,7 +98,7 @@ function callOpenAI(
       (res) => {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
+        res.on('end', () => { 
           clearTimeout(timer);
           if (res.statusCode !== 200) {
             reject(new Error(`OpenAI API ${res.statusCode}: ${data.slice(0, 200)}`));

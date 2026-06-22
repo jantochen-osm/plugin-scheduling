@@ -189,7 +189,7 @@ export async function scheduleAll(
         rankedLines = [...preferred, ...rest];
       }
 
-      if (rankedLines.length === 0) {
+      if (rankedLines.length === 0) { 
         exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'NO_AVAILABLE_LINE', severity: 'BLOCKER', message: `Stage ${stageName}: no available line` });
         continue;
       }
@@ -202,7 +202,7 @@ export async function scheduleAll(
       for (const allowOT of [false, true]) {
         if (bestResult?.finishDate <= dlvStr) break;   // already on-time, stop
 
-        for (const line of rankedLines) {
+        for (const line of rankedLines) { 
           // sequential start: from where previous order on this line ended
           const lineFinishDate = lineLastFinish[line] || '';
           const lineEarliestDate = lineFinishDate

@@ -3,6 +3,7 @@ import {
   Table, Tag, Typography, Space, message, Button, Radio,
   Popover, Tooltip, Popconfirm, Alert, Modal, DatePicker,
 } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import { dayjs, formatNum } from './gantt/utils';
 import { CapacityDetailCard } from './gantt/CapacityDetailCard';
 import { AdjustDrawer } from './gantt/AdjustDrawer';
@@ -28,6 +29,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
   const [drawerOpen,     setDrawerOpen]     = useState(false);
   const [drawerRecord,   setDrawerRecord]   = useState<any>(null);
   const [reScheduling,   setReScheduling]   = useState(false);
+  const [exporting,      setExporting]      = useState(false);
   const [unlockRescheduleOpen, setUnlockRescheduleOpen] = useState(false);
   const [unlockRescheduleStartDate, setUnlockRescheduleStartDate] = useState<any>(dayjs());
 
@@ -213,6 +215,51 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
 
   // 初始加载
   useEffect(() => { fetchScheduleData(); }, []);
+
+  // ── 导出 ESG Excel ─────────────────────────────────────────────────
+  const handleExportExcel = useCallback(async () => {
+    setExporting(true);
+    try {
+      // api.request 自动处理 NocoBase Token 认证 + URL 前缀
+      // 传入 responseType:'blob' 让 axios 以二进制流返回
+      const res = await api.request({
+        url: 'scheduling:exportEsgExcel',
+        method: 'POST',
+        data: { runId: currentRunId },
+        responseType: 'blob',
+      } as any);
+
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const dateTag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const filename = `ESG_Production_Plan_${dateTag}.xlsx`;
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      message.success(`「${filename}」已下载`);
+    } catch (e: any) {
+      // axios 错误时 e.response?.data 是 Blob，需要转成文本读取错误信息
+      let errMsg = e?.message || '未知错误';
+      if (e?.response?.data instanceof Blob) {
+        try {
+          const text = await e.response.data.text();
+          const json = JSON.parse(text);
+          errMsg = json?.errors?.[0]?.message || json?.error || errMsg;
+        } catch { /* 忽略解析失败 */ }
+      }
+      message.error('导出失败：' + errMsg);
+    } finally {
+      setExporting(false);
+    }
+  }, [api, currentRunId]);
 
   // 监听排产完成事件，自动刷新（与 SchedulingOrderSelector 通信）
   useEffect(() => {
@@ -566,6 +613,14 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
             </Popconfirm>
           )}
 
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={handleExportExcel}
+            loading={exporting}
+            style={{ borderColor: '#52c41a', color: '#52c41a' }}
+          >
+            导出 Excel
+          </Button>
           <Button type="primary" onClick={fetchScheduleData} loading={loading}>刷新数据</Button>
         </Space>
       </div>
