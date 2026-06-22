@@ -124,8 +124,8 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       });
 
       const rows: any[] = res?.data?.data || res?.data || [];
-      // 只展示 ESG 订单
-      setAllOrders(rows.map(mapRow).filter(o => (o.osmCategory || '').toUpperCase() === 'ESG'));
+      // 只展示 ESG 订单, osmCategory为空的情况也包含在内（兼容未分类订单）
+      setAllOrders(rows.map(mapRow).filter(o => (o.osmCategory || '').toUpperCase() !== 'EE'));
     } catch (e: any) {
       message.error('加载订单失败：' + (e?.message || '未知错误'));
     } finally {
