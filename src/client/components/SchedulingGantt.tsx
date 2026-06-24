@@ -133,7 +133,12 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
         const calRecords = calResponse?.data?.data || calResponse?.data || [];
         const calMap: Record<string, any> = {};
         calRecords.forEach((cal: any) => {
-          if (cal.calendarDate) calMap[cal.calendarDate] = cal;
+          if (cal.calendarDate) {
+            // 统一取 YYYY-MM-DD 作为 key，防御 API 返回带时区的 ISO 字符串
+            // 如 '2026-04-26T16:00:00.000Z' → '2026-04-26'，避免 key 不匹配
+            const dateKey = String(cal.calendarDate).split('T')[0];
+            calMap[dateKey] = cal;
+          }
         });
         setFactoryCalendar(calMap);
       }
@@ -233,7 +238,9 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
       const url = URL.createObjectURL(blob);
-      const dateTag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      // 用本地时间生成日期标签，避免 toISOString() 在 UTC+8 午前返回前一天 UTC 日期
+      const _n = new Date();
+      const dateTag = `${_n.getFullYear()}${String(_n.getMonth() + 1).padStart(2, '0')}${String(_n.getDate()).padStart(2, '0')}`;
       const filename = `ESG_Production_Plan_${dateTag}.xlsx`;
 
       const a = document.createElement('a');

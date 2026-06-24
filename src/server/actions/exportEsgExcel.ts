@@ -57,46 +57,91 @@ function colLetter(n: number): string {
   return r;
 }
 
-// ── 日期工具 ──────────────────────────────────────────────────────
+// ── 日期工具 ──────────────────────────────────────────────────────────
+// 核心原则：
+//   1. Sequelize 返回的 Date 对象 = 服务器本地时间（getFullYear/getMonth/getDate 取本地日期）
+//   2. 排产引擎的 formatDate 也用本地时间 → 两者一致
+//   3. 纯日期字符串 'YYYY-MM-DD' 直接返回
+//   4. 带时区的字符串（ISO 格式）按 UTC 解析后取 UTC 日期
+
+/**
+ * 将任意日期输入转为 'YYYY-MM-DD' 字符串。
+ * - 纯日期字符串 'YYYY-MM-DD'：直接返回
+ * - Date 对象：取本地日期（与排产引擎 formatDate 一致）
+ * - ISO 字符串：按 UTC 解析，取 UTC 日期
+ */
 function toDateStr(d: any): string {
   if (!d) return '';
-  if (typeof d === 'string') return d.split('T')[0];
+  // 纯日期字符串 'YYYY-MM-DD'：无时间信息，直接返回
+  if (typeof d === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(d.trim())) return d.trim();
+  // Date 对象：取本地日期（与排产引擎 formatDate 行为一致）
   if (d instanceof Date) {
+    if (isNaN(d.getTime())) return '';
     const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${dd}`;
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
   }
-  return String(d).split('T')[0];
+  // 其他字符串（如 ISO 格式 '2026-04-26T16:00:00.000Z'）：按 UTC 解析，取 UTC 日期
+  const ts = new Date(String(d)).getTime();
+  if (isNaN(ts)) return '';
+  const utc = new Date(ts);
+  const y = utc.getUTCFullYear();
+  const mo = String(utc.getUTCMonth() + 1).padStart(2, '0');
+  const dy = String(utc.getUTCDate()).padStart(2, '0');
+  return `${y}-${mo}-${dy}`;
 }
 
-/** 生成两个日期之间的所有日期（含端点） */
+/**
+ * 将 'YYYY-MM-DD' 字符串解析为 Date 对象（UTC 午夜）。
+ * 用于日期运算（getUTCDay、日期比较等）。
+ * 注意：用 UTC 方法（getUTCDate/setUTCDate）避免服务器时区影响。
+ */
+function parseDateUTC(dateStr: string): Date {
+  return new Date(dateStr + 'T00:00:00Z');
+}
+
+/**
+ * 生成 [from, to] 范围内的连续日期字符串数组
+ */
 function dateRange(from: string, to: string): string[] {
   const result: string[] = [];
-  const cur = new Date(from + 'T00:00:00');
-  const end = new Date(to + 'T00:00:00');
+  const cur = parseDateUTC(from);
+  const end = parseDateUTC(to);
   while (cur <= end) {
     result.push(toDateStr(cur));
-    cur.setDate(cur.getDate() + 1);
+    cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return result;
 }
 
-/** 周次标签：ISO week number，含年份 */
+/**
+ * 周次标签：ISO week number
+ */
 function getWeekLabel(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00');
-  const jan4 = new Date(d.getFullYear(), 0, 4);
-  const weekNum = Math.ceil(((d.getTime() - jan4.getTime()) / 86400000 + jan4.getDay() + 1) / 7);
+  const d = parseDateUTC(dateStr);
+  const jan4 = parseDateUTC(`${d.getUTCFullYear()}-01-04`);
+  const dMs = d.getTime();
+  const jan4Ms = jan4.getTime();
+  const dayOfWeek = d.getUTCDay(); // 0=Sun ... 6=Sat
+  const weekNum = Math.ceil(((dMs - jan4Ms) / 86400000 + dayOfWeek + 1) / 7);
   return `WK${weekNum}`;
 }
 
 /** 星期缩写 */
 const DAY_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
-// ── Excel 序列日期（1900年起） ─────────────────────────────────────
+/**
+ * Excel 序列日期（1900 年起）。
+ * Excel 日期是"所见即所得"的本地日期，用 UTC 午夜时间戳计算。
+ *
+ * 注意：Excel 1900 日期系统把 1900-02-29 算作有效日期（实际不存在），
+ * 所以 epoch 是 1899-12-30（而不是 1899-12-31）。
+ * 验证：1900-03-01 的序列号 = 61，1900-03-01 - 1899-12-30 = 61 天 ✓
+ */
 function toExcelDate(dateStr: string): number {
-  const d = new Date(dateStr + 'T00:00:00');
-  const epoch = new Date('1899-12-31T00:00:00');
+  const d = parseDateUTC(dateStr);
+  const epoch = new Date('1899-12-30T00:00:00Z');
   return Math.round((d.getTime() - epoch.getTime()) / 86400000);
 }
 
@@ -251,7 +296,7 @@ export async function exportEsgExcel(ctx: Context) {
   // 工作日判断：先查日历，再回退到周六/周日
   function isRestDay(dateStr: string): boolean {
     if (calendarMap[dateStr] !== undefined) return !calendarMap[dateStr];
-    const dow = new Date(dateStr + 'T00:00:00').getDay();
+    const dow = parseDateUTC(dateStr).getUTCDay();
     return dow === 0 || dow === 6;
   }
 
@@ -320,13 +365,15 @@ export async function exportEsgExcel(ctx: Context) {
 
   // Row 1: 标题
   const r1 = sheet.getRow(currentRow++);
-  sheet.mergeCells(`A1:G1`);
+  sheet.mergeCells('A1:D1');  // only merge title cols
   r1.getCell(1).value = 'MD Production schedule.';
   r1.getCell(1).font = FONT_TITLE;
   r1.getCell(1).fill = BG_GLOBAL_TITLE;
   r1.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
   r1.getCell(5).value = 'Update date';
   r1.getCell(5).font = FONT_BOLD;
+  r1.getCell(5).fill = BG_GLOBAL_TITLE;
+  r1.getCell(6).fill = BG_GLOBAL_TITLE;
   // Update date 值：今天
   r1.getCell(6).value = new Date();
   r1.getCell(6).numFmt = 'yyyy/mm/dd';
@@ -427,7 +474,7 @@ export async function exportEsgExcel(ctx: Context) {
       dayRow.getCell(c).border = BORDER_THIN;
     }
     dateCols.forEach((d, i) => {
-      const dow = new Date(d + 'T00:00:00').getDay();
+      const dow = parseDateUTC(d).getUTCDay();
       const cell = dayRow.getCell(DATE_COL_START + i);
       cell.value = DAY_NAMES[dow];
       cell.font = isRestDay(d)
@@ -514,12 +561,8 @@ export async function exportEsgExcel(ctx: Context) {
     }
     dateCols.forEach((d, i) => {
       const cell = upphRow.getCell(DATE_COL_START + i);
-      const uphArr = lineUpphAvg[d];
-      const avgUph = uphArr && uphArr.length > 0
-        ? uphArr.reduce((a, b) => a + b, 0) / uphArr.length
-        : null;
-      cell.value = avgUph != null ? Math.round(avgUph * 100) / 100 : null;
-      cell.numFmt = '0.00';
+      // UPPH Target 日期列留空，仅设置样式
+      cell.value = null;
       cell.fill = isRestDay(d) ? BG_REST_DAY : BG_UPPH;
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = BORDER_THIN;
@@ -540,8 +583,15 @@ export async function exportEsgExcel(ctx: Context) {
     dateCols.forEach((d, i) => {
       const cell = whDayRow.getCell(DATE_COL_START + i);
       const wh = lineWhDay[d];
-      cell.value = wh > 0 ? wh : null;
-      cell.numFmt = '0.#';
+      // 用 JS 射入局整数，避免 ExcelJS numFmt 小数点边界问题
+      // 整数直接存整数（如 10），否则保留一位小数（如 9.5）
+      let displayWh: number | null = null;
+      if (wh > 0) {
+        displayWh = Number.isInteger(wh) ? wh : Math.round(wh * 10) / 10;
+      }
+      cell.value = displayWh;
+      // 不设置 numFmt，用 General 格式：
+      // 整数 10 显示为 "10"，小数 9.5 显示为 "9.5"(希期表现)
       cell.fill = isRestDay(d) ? BG_REST_DAY : BG_WH_DAY;
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
       cell.border = BORDER_THIN;
@@ -712,7 +762,9 @@ export async function exportEsgExcel(ctx: Context) {
   sheet.views = [{ state: 'frozen', xSplit: FIXED_COLS, ySplit: 6, topLeftCell: `${colLetter(DATE_COL_START)}7` }];
 
   // ── 13. 输出 Buffer ────────────────────────────────────────────────
-  const dateTag = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  // 用本地时间生成日期标签，避免 toISOString() 在 UTC+8 午前返回前一天 UTC 日期
+  const _now = new Date();
+  const dateTag = `${_now.getFullYear()}${String(_now.getMonth() + 1).padStart(2, '0')}${String(_now.getDate()).padStart(2, '0')}`;
   const filename = `ESG_Production_Plan_${dateTag}.xlsx`;
 
   ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
