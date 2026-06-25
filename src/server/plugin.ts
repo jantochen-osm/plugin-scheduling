@@ -11,6 +11,7 @@ import { unlockAllByRunId } from './actions/unlockAllByRunId';
 import { getWorkdays } from './actions/getWorkdays';
 import { deleteVersion } from './actions/deleteVersion';
 import { exportEsgExcel } from './actions/exportEsgExcel';
+import { schedulablePools } from './actions/schedulablePools';
 
 export class PluginSchedulingServer extends Plugin {
   async beforeLoad() {
@@ -206,6 +207,7 @@ export class PluginSchedulingServer extends Plugin {
         workdays: getWorkdays,  // 查询工作日历（前端按日期自动计算每日产量）
         deleteVersion,          // 删除指定版本的排产结果
         exportEsgExcel,         // 导出 ESG 排产计划 Excel 文件
+        schedulablePools,        // 返回可排产订单池列表（前端同步过滤用）
       },
     });
 
@@ -214,7 +216,7 @@ export class PluginSchedulingServer extends Plugin {
       'scheduling',
       ['run', 'validate', 'adjustResult', 'previewOrders',
        'lastRun', 'listRuns', 'removeResults', 'reScheduleAfterAdjust', 'workdays',
-       'unlockAllByRunId', 'deleteVersion', 'exportEsgExcel'],
+       'unlockAllByRunId', 'deleteVersion', 'exportEsgExcel', 'schedulablePools'],
       'loggedIn',
     );
     this.app.acl.allow('schedule_runs', ['list', 'get'], 'loggedIn');

@@ -25,6 +25,7 @@ interface Order {
   keyAccount: string;
   osmCategory: string;
   prodStatus: string;
+  prodPoolId: string;
 }
 
 // ============================================================================
@@ -49,6 +50,7 @@ function mapRow(r: any): Order {
     keyAccount:  r.keyaccount  || r.keyAccount  || '',
     osmCategory: r.osm_category || r.osmCategory || '',
     prodStatus:  r.prodstatus  || r.prodStatus  || '',
+    prodPoolId:  r.prodpoolid  || r.prodPoolId  || '',
   };
 }
 
@@ -61,6 +63,11 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
   // ── 筛选状态 ──────────────────────────────────────────────────────────
   const [dlvDateRange, setDlvDateRange] = useState<[any, any] | null>(null);
   const [keyAccountFilter, setKeyAccountFilter] = useState<string | undefined>(undefined);
+
+  // ── 分页 & 总条数 ────────────────────────────────────────────────────
+  const [total, setTotal] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   // ── 订单列表 ──────────────────────────────────────────────────────────
   const [allOrders, setAllOrders] = useState<Order[]>([]);
@@ -94,7 +101,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
   const isFullMode     = selectedCount === 0;
 
   // ── 加载最近运行摘要 ─────────────────────────────────────────────────
-  const fetchLastRun = useCallback(async () => {  
+  const fetchLastRun = useCallback(async () => {
     try {
       const res = await api.request({ url: 'scheduling:lastRun', method: 'get' });
       const record = res?.data?.data?.data || res?.data?.data || null;
@@ -102,30 +109,34 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
     } catch { /* ignore */ }
   }, [api]);
 
-  // ── 加载 ESG 订单 ─────────────────────────────────────────────────────
-  const loadOrders = useCallback(async () => {
+  // ── 加载订单（后端过滤 + 分页）──────────────────────────────────────
+  const loadOrders = useCallback(async (page = 1, size = 20) => {
     setLoadingOrders(true);
-    setSelectedRowKeys([]);
     try {
       const filter: any = {};
-      if (dlvDateRange?.[0]) filter.dlvdate = { ...(filter.dlvdate || {}), $gte: dlvDateRange[0].format('YYYY-MM-DD') };
+      if (dlvDateRange?.[0]) filter.dlvdate = { $gte: dlvDateRange[0].format('YYYY-MM-DD') };
       if (dlvDateRange?.[1]) filter.dlvdate = { ...(filter.dlvdate || {}), $lte: dlvDateRange[1].format('YYYY-MM-DD') };
       if (keyAccountFilter)  filter.keyaccount = keyAccountFilter;
 
       const res = await api.request({
-        url: 'dn_production_order_ds:list',
+        url: 'scheduling:schedulablePools',
         method: 'get',
         params: {
-          paginate: false,
-          pageSize: 2000,
+          page,
+          pageSize: size,
           sort: 'dlvdate',
           ...(Object.keys(filter).length > 0 ? { filter: JSON.stringify(filter) } : {}),
         },
       });
 
-      const rows: any[] = res?.data?.data || res?.data || [];
-      // 只展示 ESG 订单, osmCategory为空的情况也包含在内（兼容未分类订单）
-      setAllOrders(rows.map(mapRow).filter(o => (o.osmCategory || '').toUpperCase() !== 'EE'));
+      // 后端返回: { data: [...], meta: { total, page, pageSize } }
+      const body = res?.data?.data || {};
+      console.log('loadOrders response:', body);
+      const data: any[] = body.data || [];
+      const total: number = body.meta?.total || 0;
+
+      setAllOrders(data.map(mapRow));
+      setTotal(total);
     } catch (e: any) {
       message.error('加载订单失败：' + (e?.message || '未知错误'));
     } finally {
@@ -138,6 +149,12 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
     loadOrders();
     fetchLastRun();
   }, []);
+
+  // 筛选条件变化时重新加载（重置到第1页）
+  useEffect(() => {
+    setCurrentPage(1);
+    loadOrders(1, pageSize);
+  }, [dlvDateRange, keyAccountFilter]);
 
   // ── 执行排产（ESG 固定） ──────────────────────────────────────────────
   const doRun = useCallback(async () => {
@@ -269,6 +286,14 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       width: 120,
       render: (val: string) => <Text type="secondary" style={{ fontSize: 11 }}>{val || '-'}</Text>,
     },
+    {
+      title: '生产池',
+      dataIndex: 'prodPoolId',
+      key: 'prodPoolId',
+      width: 120,
+      render: (val: string) =>
+        val ? <Tag color="geekblue" style={{ fontSize: 10 }}>{val}</Tag> : <Text type="secondary">-</Text>,
+    },
   ];
 
   const sc           = runResult?.scheduledCount ?? 0;
@@ -351,7 +376,10 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
               <Button
                 size="small"
                 icon={<ReloadOutlined />}
-                onClick={loadOrders}
+                onClick={() => {
+                  setCurrentPage(1);
+                  loadOrders(1, pageSize);
+                }}
                 loading={loadingOrders}
               >
                 刷新
@@ -365,7 +393,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <Space size={8}>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                共 <strong>{allOrders.length}</strong> 条
+                共 <strong>{total}</strong> 条
                 {overdueCount > 0 && (
                   <Tag color="red" style={{ fontSize: 10, marginLeft: 6 }}>逾期 {overdueCount}</Tag>
                 )}
@@ -406,7 +434,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
           </div>
         </Card>
 
-        {/* ─── 订单列表 ─────────────────────────────────── */}
+        {/* ─── 订单列表（后端分页）──────────────────────── */}
         <Table
           size="small"
           rowKey="prodId"
@@ -421,11 +449,18 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
           }}
           rowClassName={(record: Order) => isOverdue(record.dlvDate) ? 'order-row-overdue' : ''}
           pagination={{
-            defaultPageSize: 20,
+            current: currentPage,
+            pageSize,
+            total,
             pageSizeOptions: ['20', '50', '100'],
             showSizeChanger: true,
             showQuickJumper: true,
             showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条，共 ${total} 条`,
+            onChange: (page, size) => {
+              setCurrentPage(page);
+              setPageSize(size);
+              loadOrders(page, size);
+            },
           }}
           scroll={{ x: 760 }}
         />

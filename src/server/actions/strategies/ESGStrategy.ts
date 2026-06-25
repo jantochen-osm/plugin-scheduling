@@ -39,7 +39,7 @@ export class ESGStrategy implements SchedulingStrategy {
 
   filterOrders(orders: any[], poolSet: Set<string>): any[] {
     return orders.filter(
-      (o) => o.osmCategory === 'ESG' && poolSet.has(o.prodPoolId),
+      (o) => (!o.osmCategory || o.osmCategory === 'ESG') && poolSet.has(o.prodPoolId),
     );
   }
 

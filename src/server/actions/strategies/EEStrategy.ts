@@ -35,7 +35,7 @@ export class EEStrategy implements SchedulingStrategy {
 
   filterOrders(orders: any[], poolSet: Set<string>): any[] {
     return orders.filter(
-      (o) => o.osmCategory === 'EE' && poolSet.has(o.prodPoolId),
+      (o) => (!o.osmCategory || o.osmCategory === 'EE') && poolSet.has(o.prodPoolId),
     );
   }
 
