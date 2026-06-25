@@ -26,6 +26,7 @@ interface Order {
   osmCategory: string;
   prodStatus: string;
   prodPoolId: string;
+  project: string;
 }
 
 // ============================================================================
@@ -51,6 +52,7 @@ function mapRow(r: any): Order {
     osmCategory: r.osm_category || r.osmCategory || '',
     prodStatus:  r.prodstatus  || r.prodStatus  || '',
     prodPoolId:  r.prodpoolid  || r.prodPoolId  || '',
+    project:     r.project     || '',
   };
 }
 
@@ -228,34 +230,45 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
     });
   }, [isFullMode, selectedCount, schedStartDate, doRun]);
 
-  // ── 表格列定义 ────────────────────────────────────────────────────────
+  // ── 表格列定义（紧凑布局，总宽 ~720px）──────────────────────────────
   const columns = [
     {
       title: '生产单号',
       dataIndex: 'prodId',
       key: 'prodId',
-      width: 145,
+      width: 120,
+      fixed: 'left' as const,
       render: (val: string, record: Order) => (
         <Space direction="vertical" size={0}>
-          <Text strong style={{ fontSize: 12 }}>{val}</Text>
+          <Text strong style={{ fontSize: 11 }}>{val}</Text>
           {isOverdue(record.dlvDate) && (
-            <Tag color="red" style={{ fontSize: 10, padding: '0 4px', margin: 0 }}>逾期</Tag>
+            <Tag color="red" style={{ fontSize: 9, padding: '0 2px', margin: 0 }}>逾期</Tag>
           )}
         </Space>
       ),
     },
     {
+      title: 'Project',
+      dataIndex: 'project',
+      key: 'project',
+      width: 90,
+      ellipsis: true,
+      render: (val: string) =>
+        val ? <Text style={{ fontSize: 11 }}>{val}</Text> : <Text type="secondary">-</Text>,
+    },
+    {
       title: '物料',
       dataIndex: 'itemId',
       key: 'itemId',
-      width: 130,
-      render: (val: string) => <Text style={{ fontSize: 12 }}>{val}</Text>,
+      width: 90,
+      ellipsis: true,
+      render: (val: string) => <Text style={{ fontSize: 11 }}>{val}</Text>,
     },
     {
       title: '数量',
       dataIndex: 'qtySched',
       key: 'qtySched',
-      width: 90,
+      width: 65,
       align: 'right' as const,
       render: (val: number) => val?.toLocaleString(),
     },
@@ -263,10 +276,10 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       title: '交期',
       dataIndex: 'dlvDate',
       key: 'dlvDate',
-      width: 80,
+      width: 70,
       sorter: (a: Order, b: Order) => a.dlvDate.localeCompare(b.dlvDate),
       render: (val: string) => (
-        <Text strong type={isOverdue(val) ? 'danger' : 'warning'}>
+        <Text strong type={isOverdue(val) ? 'danger' : 'warning'} style={{ fontSize: 11 }}>
           {val ? dayjs(val).format('MM-DD') : '-'}
         </Text>
       ),
@@ -275,24 +288,27 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       title: '客户',
       dataIndex: 'keyAccount',
       key: 'keyAccount',
-      width: 110,
+      width: 75,
+      ellipsis: true,
       render: (val: string) =>
-        val ? <Tag color="blue" style={{ fontSize: 11 }}>{val}</Tag> : <Text type="secondary">-</Text>,
+        val ? <Tag color="blue" style={{ fontSize: 10 }}>{val}</Tag> : <Text type="secondary">-</Text>,
     },
     {
       title: '状态',
       dataIndex: 'prodStatus',
       key: 'prodStatus',
-      width: 120,
-      render: (val: string) => <Text type="secondary" style={{ fontSize: 11 }}>{val || '-'}</Text>,
+      width: 70,
+      ellipsis: true,
+      render: (val: string) => <Text type="secondary" style={{ fontSize: 10 }}>{val || '-'}</Text>,
     },
     {
       title: '生产池',
       dataIndex: 'prodPoolId',
       key: 'prodPoolId',
-      width: 120,
+      width: 65,
+      ellipsis: true,
       render: (val: string) =>
-        val ? <Tag color="geekblue" style={{ fontSize: 10 }}>{val}</Tag> : <Text type="secondary">-</Text>,
+        val ? <Tag color="geekblue" style={{ fontSize: 9 }}>{val}</Tag> : <Text type="secondary">-</Text>,
     },
   ];
 
@@ -462,7 +478,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
               loadOrders(page, size);
             },
           }}
-          scroll={{ x: 760 }}
+          scroll={{ x: 'max-content' }}
         />
 
       </Space>

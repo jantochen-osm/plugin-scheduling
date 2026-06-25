@@ -83,7 +83,7 @@ export async function schedulablePools(ctx: Context) {
   // Fetch page
   const offset = (page - 1) * pageSize;
   const [rows] = await ctx.db.sequelize.query(
-    `SELECT "prodid", "itemid", "qtysched", "dlvdate", "prodstatus", "prodpoolid", "osm_category", "keyaccount"
+    `SELECT "prodid", "itemid", "qtysched", "dlvdate", "prodstatus", "prodpoolid", "osm_category", "keyaccount", "project"
      FROM dn_production_order_ds
      ${whereSql}
      ORDER BY "${sortField}" ${sortDir}
