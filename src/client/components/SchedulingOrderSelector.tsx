@@ -312,11 +312,15 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
     },
   ];
 
-  const sc           = runResult?.scheduledCount ?? 0;
-  const ec           = runResult?.exceptionCount ?? 0;
-  const exceptions   = runResult?.exceptions || [];
-  const blockerCount = exceptions.filter((e: any) => e.severity === 'BLOCKER').length;
-  const warningCount = exceptions.filter((e: any) => e.severity === 'WARNING').length;
+  const sc                = runResult?.scheduledCount ?? 0;
+  const ec                = runResult?.exceptionCount ?? 0;
+  const exceptions        = runResult?.exceptions || [];
+  const blockerCount      = exceptions.filter((e: any) => e.severity === 'BLOCKER').length;
+  const alreadyCompleted  = exceptions.filter((e: any) => e.exceptionType === 'ALREADY_COMPLETED');
+  const otherWarningCount = exceptions.filter(
+    (e: any) => e.severity === 'WARNING' && e.exceptionType !== 'ALREADY_COMPLETED',
+  ).length;
+  const warningCount      = exceptions.filter((e: any) => e.severity === 'WARNING').length;
 
   // ============================================================================
   // 渲染
@@ -552,12 +556,27 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
             />
           )}
 
-          {/* WARNING 跳过：池子不在白名单，属于业务预期 */}
-          {warningCount > 0 && (
+          {/* ALREADY_COMPLETED：订单已全部完成，自动跳过，非错误 */}
+          {alreadyCompleted.length > 0 && (
+            <Alert
+              type="success"
+              showIcon
+              style={{ marginBottom: 0 }}
+              message={`✓ ${alreadyCompleted.length} 个订单已全部完成，自动跳过排产`}
+              description={
+                <span style={{ fontSize: 12 }}>
+                  {alreadyCompleted.map((e: any) => e.prodId).join(' · ')}
+                </span>
+              }
+            />
+          )}
+
+          {/* 其他 WARNING：池子不在白名单等，属于业务预期 */}
+          {otherWarningCount > 0 && (
             <Alert
               type="warning"
               showIcon
-              message={`${warningCount} 条订单已跳过（仅供参考）`}
+              message={`${otherWarningCount} 条订单已跳过（仅供参考）`}
               description="这些订单所在生产池（如 Tooling / Bond Book 类）不属于装配排产范围，系统已自动排除，不影响排产结果。"
             />
           )}
@@ -617,6 +636,7 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
         />
         <div style={{ marginTop: 12, padding: '8px 12px', background: '#fffbe6', borderRadius: 6, fontSize: 12, color: '#614700', lineHeight: 1.6 }}>
           ℹ <strong>BLOCKER</strong> — 订单未参与排产（如缺少工艺路线、数量为0等）<br />
+          ℹ <strong>ALREADY_COMPLETED</strong> — 订单已全部完成（实际产出 ≥ 计划量），系统自动跳过，非错误<br />
           ℹ <strong>WARNING</strong> — 订单已排产（如交期已逾期，系统以最高优先级处理）
         </div>
       </Modal>

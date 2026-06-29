@@ -6,7 +6,7 @@ const { Text } = Typography;
 
 // ── Layout constants ────────────────────────────────────────────────────────
 const COL_W  = 48;   // px per day column
-const ROW_H  = 54;   // px for regular record row
+const ROW_H  = 68;   // px for regular record row（含进度条行）
 const GRP_H  = 38;   // px for group-header row
 const HDR_H  = 46;   // px for sticky date header
 
@@ -391,6 +391,26 @@ export const DraggableGantt: React.FC<DraggableGanttProps> = ({
                   {record.uph > 0 && ` · UPH ${formatNum(record.uph, 1)}`} 
                    · Labor {record.headcount || 'N/A'}
                 </Text>
+                {/* ── 动态扣减进度条（仅当 qtySched > 0 时渲染）──────────────── */}
+                {Number(record.qtySched) > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 3 }}>
+                    <div style={{
+                      flex: 1, height: 4, background: '#e0e0e0',
+                      borderRadius: 2, overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        width: `${record.completionRate ?? 0}%`,
+                        height: '100%',
+                        borderRadius: 2,
+                        background: (record.completionRate ?? 0) >= 100 ? '#52c41a' : '#1677ff',
+                        transition: 'width 0.3s',
+                      }} />
+                    </div>
+                    <span style={{ fontSize: 10, color: '#aaa', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                      {Number(record.qtyActual ?? 0).toLocaleString()}/{Number(record.qtySched).toLocaleString()} ({record.completionRate ?? 0}%)
+                    </span>
+                  </div>
+                )}
               </div>
             );
           })}

@@ -16,7 +16,13 @@ import { formatDate, addDays, getToday, getTodayStr, SCHEDULING_CONFIG } from '.
 
 // ── Step 1: 拉取订单 ────────────────────────────────────────────────
 /**
- * 从 dn_production_order_ds 拉取订单。
+ * 从 dn_production_order_ds 拉取订单，并附加动态扣减字段。
+ *
+ * 动态扣减逻辑：
+ *   - 从 dn_esg_assebmly_production_report 汇总每笔订单的累计良品产出量（SUM totalgoodqty）
+ *   - qtyRemaining = MAX(0, qtySched - qtyActual)，排产引擎只排剩余量
+ *   - 查询失败时降级：qtyActual=0，qtyRemaining=qtySched（行为与原来完全一致）
+ *
  * @param prodIds  指定订单 ID 列表（prodid 字段）；不传或空数组 = 全量
  */
 export async function step1_fetchOrders(ctx: Context, prodIds?: string[]) {
@@ -25,20 +31,60 @@ export async function step1_fetchOrders(ctx: Context, prodIds?: string[]) {
     ? { prodid: { $in: prodIds } }   // 指定订单
     : {};                             // 全量（兜底，不传 prodIds 时）
   const rows = (await repo.find({ paginate: false, filter })) as any[];
-  return rows.map((r: any) => ({
-    prodId: r.prodid,
-    itemId: r.itemid,
-    qtySched: Number(r.qtysched) || 0,
-    // 使用本地时区 formatDate，避免 UTC+8 环境下 toISOString 导致日期偏移 -1 天
-    // 例：2026-06-05T00:00:00+08:00 → toISOString = 2026-06-04T16:00Z → 错误地解析为 06/04
-    dlvDate: r.dlvdate instanceof Date
-      ? formatDate(r.dlvdate)               // 使用本地日期格式化
-      : r.dlvdate ? String(r.dlvdate).split('T')[0] : '',
-    prodStatus: r.prodstatus,
-    prodPoolId: r.prodpoolid,
-    osmCategory: r.osm_category,
-    keyAccount: r.keyaccount || '',
-  }));
+
+  // ── 批量查询累计实际产出量（动态扣减核心逻辑）──────────────────────
+  // 来源：dn_esg_assebmly_production_report
+  //   - mo          → 关联 dn_production_order_ds.prodid
+  //   - totalgoodqty → 当日良品数，SUM 后得累计完成量
+  // 使用 LEFT JOIN 语义（IN + COALESCE）确保无记录的订单 qtyActual=0
+  const actualQtyMap = new Map<string, number>();
+  try {
+    const allProdIds = rows.map((r: any) => r.prodid).filter(Boolean);
+    if (allProdIds.length > 0) {
+      const [actualRows] = await ctx.db.sequelize.query(
+        `SELECT mo AS prod_id,
+                COALESCE(SUM(totalgoodqty), 0) AS qty_actual
+         FROM   dn_esg_assebmly_production_report
+         WHERE  mo IN (:prodIds)
+         GROUP  BY mo`,
+        { replacements: { prodIds: allProdIds } },
+      ) as any;
+      for (const row of (actualRows || [])) {
+        actualQtyMap.set(String(row.prod_id), Number(row.qty_actual) || 0);
+      }
+    }
+  } catch (e: any) {
+    // 查询失败时降级：qtyActual=0，排产行为与修改前完全一致（向后兼容）
+    ctx.logger?.warn?.('[step1] fetchActualQty failed, fallback to 0: ' + (e?.message || String(e)));
+  }
+  // ────────────────────────────────────────────────────────────────────
+
+  return rows.map((r: any) => {
+    const qtySched      = Number(r.qtysched) || 0;
+    const qtyActual     = actualQtyMap.get(String(r.prodid)) ?? 0;
+    const qtyRemaining  = Math.max(0, qtySched - qtyActual);
+    const completionRate = qtySched > 0
+      ? Math.min(100, Math.round(qtyActual / qtySched * 100))
+      : 0;
+
+    return {
+      prodId:        r.prodid,
+      itemId:        r.itemid,
+      qtySched,          // 原始计划量（保留，展示及异常记录用）
+      qtyActual,         // 累计已完成良品数（SUM totalgoodqty）
+      qtyRemaining,      // 实际待排量 ← 排产引擎使用此值
+      completionRate,    // 完成率 % (0-100)
+      // 使用本地时区 formatDate，避免 UTC+8 环境下 toISOString 导致日期偏移 -1 天
+      // 例：2026-06-05T00:00:00+08:00 → toISOString = 2026-06-04T16:00Z → 错误地解析为 06/04
+      dlvDate: r.dlvdate instanceof Date
+        ? formatDate(r.dlvdate)               // 使用本地日期格式化
+        : r.dlvdate ? String(r.dlvdate).split('T')[0] : '',
+      prodStatus:    r.prodstatus,
+      prodPoolId:    r.prodpoolid,
+      osmCategory:   r.osm_category,
+      keyAccount:    r.keyaccount || '',
+    };
+  });
 }
 
 // ── Step 2: 校验 & 富化 ─────────────────────────────────────────────
@@ -46,6 +92,7 @@ export async function step1_fetchOrders(ctx: Context, prodIds?: string[]) {
  * 校验规则（BLOCKER → 进入 exceptions，不排产）：
  *   - dlvDate 为空                              → MISSING_DLV_DATE  BLOCKER
  *   - qtySched ≤ 0                             → INVALID_QTY       BLOCKER
+ *   - qtyRemaining ≤ 0（已全部完成）           → ALREADY_COMPLETED WARNING（跳过排产，非错误）
  *   - ESG 订单缺少 keyAccount                  → MISSING_KEY_ACCT  BLOCKER
  *   - dn_operrouteline 无该产品路线            → NO_ROUTE          BLOCKER
  *
@@ -54,6 +101,9 @@ export async function step1_fetchOrders(ctx: Context, prodIds?: string[]) {
  *     逾期订单在 step3 中获得最高优先级（overdueDays 降序第 1 排序键）
  *
  * 通过校验的订单附加 `_stages: [{ stageName: 'Assembly', stageSequence: 1 }]`
+ *
+ * 注：qtyRemaining 由 step1_fetchOrders 从 dn_esg_assebmly_production_report
+ *     汇总 totalgoodqty 计算得出；无记录时 qtyRemaining = qtySched（不过滤）。
  */
 export async function step2_validateAndEnrich(orders: any[], ctx: Context) {
   const valid: any[] = [];
@@ -68,7 +118,18 @@ export async function step2_validateAndEnrich(orders: any[], ctx: Context) {
       continue;
     }
     if (mo.qtySched <= 0) {
-      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'INVALID_QTY', severity: 'BLOCKER', message: `QtySched=${mo.qtySched}` });
+      // 计划量本身无效（数据问题）→ BLOCKER
+      exceptions.push({ prodId: mo.prodId, itemId: mo.itemId, exceptionType: 'INVALID_QTY', severity: 'BLOCKER', message: `QtySched=${mo.qtySched} is invalid` });
+      continue;
+    }
+    if ((mo.qtyRemaining ?? mo.qtySched) <= 0) {
+      // 计划量有效但已全部完成 → WARNING，跳过排产（不是错误）
+      exceptions.push({
+        prodId: mo.prodId, itemId: mo.itemId,
+        exceptionType: 'ALREADY_COMPLETED',
+        severity: 'WARNING',
+        message: `Fully done: planned=${mo.qtySched}, actual=${mo.qtyActual ?? 0} (${mo.completionRate ?? 100}%)`,
+      });
       continue;
     }
     if (mo.osmCategory === 'ESG' && !mo.keyAccount) {

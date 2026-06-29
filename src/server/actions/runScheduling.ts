@@ -303,6 +303,10 @@ export async function runScheduling(ctx: Context) {
         headcount:      r.headcount      ?? null,
         dailyPlan:      JSON.stringify(r.dailyPlan    ?? {}),
         dailyPlanDetail:JSON.stringify(r.dailyPlanDetail ?? {}),
+        // ── 动态扣减快照字段 ───────────────────────────────────────────
+        qtySched:       r.qtySched       ?? null,
+        qtyActual:      r.qtyActual      ?? 0,
+        completionRate: r.completionRate ?? 0,
       }));
 
       for (const row of rows) {
@@ -310,11 +314,13 @@ export async function runScheduling(ctx: Context) {
           `INSERT INTO schedule_results_v2
             ("runId", "prodId", "itemId", "totalQty", "dlvDate", "prodStatus", "prodPoolId", "osmCategory",
              "startDate", "finishDate", "isOverdue", "overdueDays", "overdueType",
-             "candidateLines", "chosenLine", uph, headcount, "dailyPlan", "dailyPlanDetail")
+             "candidateLines", "chosenLine", uph, headcount, "dailyPlan", "dailyPlanDetail",
+             "qtySched", "qtyActual", "completionRate")
            VALUES
             (:runId, :prodId, :itemId, :totalQty, :dlvDate::date, :prodStatus, :prodPoolId, :osmCategory,
              :startDate::date, :finishDate::date, :isOverdue, :overdueDays, :overdueType,
-             :candidateLines, :chosenLine, :uph, :headcount, :dailyPlan::json, :dailyPlanDetail::json)`,
+             :candidateLines, :chosenLine, :uph, :headcount, :dailyPlan::json, :dailyPlanDetail::json,
+             :qtySched, :qtyActual, :completionRate)`,
           { replacements: row },
         );
       }

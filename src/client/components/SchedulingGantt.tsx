@@ -289,6 +289,7 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
         lineMap[line] = {
           id: `group_${line}`, prodId: `【产线汇总】 ${line}`, chosenLine: line,
           isGroupHeader: true, totalQty: 0,
+          qtySched: 0, qtyActual: 0, completionRate: 0,  // 动态扣减分组汇总
           dailyPlan: {} as Record<string, number>,
           dailyTotalTime: {} as Record<string, number>,
           dailyBaseTime:  {} as Record<string, number>,
@@ -298,6 +299,8 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
       const group = lineMap[line];
       group.children.push(record);
       group.totalQty += Number(record.totalQty || 0);
+      group.qtySched  += Number(record.qtySched  || 0);  // 动态扣减分组汇总
+      group.qtyActual += Number(record.qtyActual || 0);  // 动态扣减分组汇总
       if (dayjs(record.startDate).isBefore(dayjs(group.startDate))) group.startDate = record.startDate;
       if (dayjs(record.finishDate).isAfter(dayjs(group.finishDate)))  group.finishDate = record.finishDate;
 
@@ -314,6 +317,10 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
 
     Object.values(lineMap).forEach((group: any) => {
       group.maxQty = Math.max(1, ...Object.values(group.dailyPlan).map((v: any) => Number(v) || 0));
+      // 动态扣减：计算分组完成率
+      group.completionRate = group.qtySched > 0
+        ? Math.min(100, Math.round(group.qtyActual / group.qtySched * 100))
+        : 0;
     });
 
     return Object.values(lineMap).sort((a: any, b: any) => a.chosenLine.localeCompare(b.chosenLine));
@@ -551,6 +558,40 @@ const SchedulingGantt: React.FC<SchedulingGanttProps> = ({ api, runId }) => {
       render: (val: any, record: any) => (
         <Text strong style={{ color: record.isGroupHeader ? '#52c41a' : 'inherit' }}>{formatNum(val)}</Text>
       ),
+    },
+    {
+      title: '完成进度', key: 'completionRate', fixed: 'left' as const, width: 130,
+      render: (_: any, record: any) => {
+        const rate    = Number(record.completionRate) || 0;
+        const planned = Number(record.qtySched)  || 0;
+        const actual  = Number(record.qtyActual) || 0;
+        const balQty  = Number(record.totalQty)  || 0;
+        if (!planned) return <Text type="secondary" style={{ fontSize: 11 }}>—</Text>;
+        return (
+          <Tooltip title={
+            <div style={{ fontSize: 12 }}>
+              <div>计划量：{planned.toLocaleString()} pcs</div>
+              <div>已完成：{actual.toLocaleString()} pcs</div>
+              <div>待排产：{balQty.toLocaleString()} pcs</div>
+            </div>
+          }>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'default' }}>
+              <div style={{
+                width: 64, height: 6, background: '#f0f0f0',
+                borderRadius: 3, overflow: 'hidden', flexShrink: 0,
+              }}>
+                <div style={{
+                  width: `${rate}%`, height: '100%', borderRadius: 3,
+                  background: rate >= 100 ? '#52c41a' : '#1677ff',
+                }} />
+              </div>
+              <Text style={{ fontSize: 11, minWidth: 30, color: rate >= 100 ? '#52c41a' : '#595959' }}>
+                {rate}%
+              </Text>
+            </div>
+          </Tooltip>
+        );
+      },
     },
   ];
 

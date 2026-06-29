@@ -142,6 +142,11 @@ export function commitBestResult(
       candidateLines: allowedLines.join(','), chosenLine: line,
       uph: routeUph,    // DB 存工艺路线标准值（不随人数变化）
       headcount,        // DB 存标准基础人力（增加的人力只体现在 dailyPlan 数量上）
+      // ── 动态扣减快照字段（排产时锁定，用于甘特图进度条展示）──────────
+      qtySched:       mo.qtySched       ?? null,  // 原始计划总量快照
+      qtyActual:      mo.qtyActual      ?? 0,      // 已完成良品数快照
+      completionRate: mo.completionRate ?? 0,      // 完成率 % 快照 (0-100)
+      // ─────────────────────────────────────────────────────────────────
       dailyPlan: dp,
       dailyPlanDetail: detailMap,  // 每日排产计算构成
       extraCapacityPlan: Object.keys(ep).length > 0 ? ep : null,

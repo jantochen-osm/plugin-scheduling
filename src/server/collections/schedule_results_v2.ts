@@ -31,6 +31,9 @@ export default defineCollection({
     { type: 'string',  name: 'chosenLine',     title: '选中产线' },
     { type: 'float',   name: 'uph',            title: 'UPH' },
     { type: 'integer', name: 'headcount',      title: '开工人数' },
+    { type: 'integer', name: 'qtySched',       title: '计划总量',  defaultValue: 0 },
+    { type: 'integer', name: 'qtyActual',      title: '已完成量',  defaultValue: 0 },
+    { type: 'integer', name: 'completionRate', title: '完成率%',   defaultValue: 0 },
     // ── JSON 字段（必须显式注册，否则 list API 不返回）──────────────────
     { type: 'json',    name: 'dailyPlan',       title: '每日排产',    interface: 'json' },
     { type: 'json',    name: 'dailyPlanDetail', title: '每日排产明细', interface: 'json' },

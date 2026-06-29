@@ -58,7 +58,7 @@ export function tryScheduleStage(
   setupTimeHours: number,
   startFrom?: string,
 ) {
-  let remainingQty = mo.qtySched;
+  let remainingQty = mo.qtyRemaining ?? mo.qtySched;  // 动态扣减：用剩余待排量；兜底退化到原始计划量
   let curDate = startFrom || today;
   let dayCount = 0;
 
