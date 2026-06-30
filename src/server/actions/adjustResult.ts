@@ -24,8 +24,25 @@
 import type { Context } from '@nocobase/actions';
 import { reScheduleAfterAdjust } from './reScheduleAfterAdjust';
 
-/** ESG 允许的产线范围 */
-const ESG_ALLOWED_LINES = ['4F1', '4F2', '4F4', '4F6'] as const;
+/** ESG 允许产线兜底值（仅当 esg_line_config 查询失败时使用） */
+const ESG_ALLOWED_LINES_FALLBACK = ['4F1', '4F2', '4F4', '4F6'];
+
+/**
+ * 从 esg_line_config 动态读取 ESG 允许产线列表。
+ * 查询失败时降级返回兜底静态列表，避免因 DB 错误阻断调整流程。
+ */
+async function getEsgAllowedLines(ctx: Context): Promise<string[]> {
+  try {
+    const rows = await ctx.db.getRepository('esg_line_config').find({
+      paginate: false,
+      filter: { isActive: true },
+    }) as any[];
+    const lines = rows.map((r: any) => r.lineCode || r.lineName || r.line).filter(Boolean);
+    return lines.length > 0 ? lines : ESG_ALLOWED_LINES_FALLBACK;
+  } catch {
+    return ESG_ALLOWED_LINES_FALLBACK;
+  }
+}
 
 export async function adjustResult(ctx: Context) {
   const body = ctx.action?.params?.values ?? ctx.request?.body ?? {};
@@ -81,13 +98,16 @@ export async function adjustResult(ctx: Context) {
     return;
   }
 
-  // 产线校验
-  if (chosenLine && !(ESG_ALLOWED_LINES as readonly string[]).includes(chosenLine)) {
-    ctx.status = 400;
-    ctx.body = {
-      error: `产线 "${chosenLine}" 不在 ESG 允许范围内（${ESG_ALLOWED_LINES.join('/')}）`,
-    };
-    return;
+  // 产线校验（动态从 esg_line_config 读取，兜底静态列表）
+  if (chosenLine) {
+    const allowedLines = await getEsgAllowedLines(ctx);
+    if (!allowedLines.includes(chosenLine)) {
+      ctx.status = 400;
+      ctx.body = {
+        error: `产线 "${chosenLine}" 不在 ESG 允许范围内（${allowedLines.join('/')}）`,
+      };
+      return;
+    }
   }
 
   // 日期顺序校验

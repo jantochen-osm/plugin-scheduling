@@ -31,8 +31,9 @@ import type { Context } from '@nocobase/actions';
 // exceljs 已在 node_modules 中存在（yarn.lock 已锁定）
 const ExcelJS = require('exceljs');
 
-// ── 产线代码 → 显示名映射 ──────────────────────────────────────────
-const LINE_DISPLAY_NAME: Record<string, string> = {
+// ── 产线代码 → 显示名兜底映射（仅当 esg_line_config 查询失败时使用）────────
+// 实际映射在 exportEsgExcel 函数内由 esg_line_config 动态构建并覆盖此值
+const LINE_DISPLAY_NAME_FALLBACK: Record<string, string> = {
   '4F1': '4F 1Line',
   '4F2': '4F 2Line',
   '4F3': '4F 3Line',
@@ -221,6 +222,28 @@ export async function exportEsgExcel(ctx: Context) {
     ctx.status = 404;
     ctx.body = { error: '暂无排产数据，请先执行排产' };
     return;
+  }
+
+  // ── 1.5 动态构建产线显示名映射（从 esg_line_config 读取）──────────────
+  // 不在映射内的产线降级用 lineCode 自身作为 Sheet 名称。
+  let LINE_DISPLAY_NAME: Record<string, string> = { ...LINE_DISPLAY_NAME_FALLBACK };
+  try {
+    const lineConfigRows = await ctx.db.getRepository('esg_line_config').find({
+      paginate: false,
+      filter: { isActive: true },
+    }) as any[];
+    if (lineConfigRows.length > 0) {
+      // 以 DB 数据覆盖兜底值： lineCode 是产线代码，如果有 displayName 字段则使用，否则用代码本身
+      const dynamicMap: Record<string, string> = {};
+      for (const r of lineConfigRows) {
+        const code = r.lineCode || r.lineName || r.line;
+        if (code) dynamicMap[code] = r.displayName || r.lineDisplayName || `4F ${code.replace('4F', '')}Line`;
+      }
+      LINE_DISPLAY_NAME = { ...LINE_DISPLAY_NAME_FALLBACK, ...dynamicMap };
+    }
+  } catch (e: any) {
+    ctx.logger?.warn?.('[exportEsgExcel] esg_line_config query failed, using fallback: ' + (e?.message || String(e)));
+    // 查询失败：保持兜底值不变
   }
 
   // ── 2. 拉取 ESG 排产结果 ─────────────────────────────────────────
