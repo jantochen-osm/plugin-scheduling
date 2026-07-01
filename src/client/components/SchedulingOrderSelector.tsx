@@ -273,6 +273,26 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       render: (val: number) => val?.toLocaleString(),
     },
     {
+      title: '已完成/余量',
+      key: 'qtyActual',
+      width: 110,
+      align: 'right' as const,
+      render: (_: any, record: any) => {
+        const actual    = Number((record as any).qtyActual    ?? 0);
+        const remaining = Number((record as any).qtyRemaining ?? record.qtySched ?? 0);
+        const rate      = Number((record as any).completionRate ?? 0);
+        if (!record.qtySched) return <Text type="secondary">-</Text>;
+        return (
+          <Tooltip title={`完成率 ${rate}%`}>
+            <Space size={1} direction="vertical" style={{ lineHeight: 1.4, textAlign: 'right' }}>
+              <Text style={{ fontSize: 11, color: '#52c41a' }}>✓ {actual.toLocaleString()}</Text>
+              <Text style={{ fontSize: 11, color: rate >= 100 ? '#52c41a' : '#1677ff' }}>余 {remaining.toLocaleString()}</Text>
+            </Space>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '交期',
       dataIndex: 'dlvDate',
       key: 'dlvDate',
@@ -467,7 +487,13 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
             onChange: keys => setSelectedRowKeys(keys),
             preserveSelectedRowKeys: true,
           }}
-          rowClassName={(record: Order) => isOverdue(record.dlvDate) ? 'order-row-overdue' : ''}
+          rowClassName={(record: Order) =>
+            isOverdue(record.dlvDate)
+              ? 'order-row-overdue'
+              : (record as any).completionRate >= 100
+                ? 'order-row-completed'
+                : ''
+          }
           pagination={{
             current: currentPage,
             pageSize,
@@ -645,6 +671,8 @@ const SchedulingOrderSelector: React.FC<{ api: any; ganttPath?: string }> = ({ a
       <style>{`
         .order-row-overdue > td { background-color: #fff2f0 !important; }
         .order-row-overdue:hover > td { background-color: #ffeded !important; }
+        .order-row-completed > td { background-color: #f6ffed !important; }
+        .order-row-completed:hover > td { background-color: #edfff0 !important; }
       `}</style>
     </div>
   );

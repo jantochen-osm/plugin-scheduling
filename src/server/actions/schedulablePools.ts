@@ -91,8 +91,43 @@ export async function schedulablePools(ctx: Context) {
     { replacements: { ...replacements, limit: pageSize, offset } },
   );
 
+  // ── 批量查询实际累计完成量（动态扣减，与 step1_fetchOrders 逻辑一致）──────
+  // 来源：dn_esg_assebmly_production_report.totalgoodqty（每日良品数 SUM）
+  // 关联：mo = dn_production_order_ds.prodid
+  const prodIds = (rows as any[]).map((r: any) => r.prodid).filter(Boolean);
+  const actualQtyMap = new Map<string, number>();
+  if (prodIds.length > 0) {
+    try {
+      const [actualRows] = await ctx.db.sequelize.query(
+        `SELECT mo                             AS prod_id,
+                COALESCE(SUM(totalgoodqty), 0) AS qty_actual
+         FROM   dn_esg_assebmly_production_report
+         WHERE  mo IN (:prodIds)
+         GROUP  BY mo`,
+        { replacements: { prodIds } },
+      ) as any;
+      for (const r of (actualRows || [])) {
+        actualQtyMap.set(String(r.prod_id), Number(r.qty_actual) || 0);
+      }
+    } catch (e: any) {
+      // 查询失败降级：qtyActual=0，不影响主流程（订单列表正常返回）
+      ctx.logger?.warn?.('[schedulablePools] fetchActualQty failed: ' + (e?.message || String(e)));
+    }
+  }
+
+  // 合并实际完成量到返回数据
+  const enrichedRows = (rows as any[]).map((r: any) => {
+    const qtySched      = Number(r.qtysched) || 0;
+    const qtyActual     = actualQtyMap.get(String(r.prodid)) ?? 0;
+    const qtyRemaining  = Math.max(0, qtySched - qtyActual);
+    const completionRate = qtySched > 0
+      ? Math.min(100, Math.round(qtyActual / qtySched * 100))
+      : 0;
+    return { ...r, qtyActual, qtyRemaining, completionRate };
+  });
+
   ctx.body = {
-    data: rows,
+    data: enrichedRows,
     meta: {
       total,
       page,
