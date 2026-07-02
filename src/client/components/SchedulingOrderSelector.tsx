@@ -27,6 +27,9 @@ interface Order {
   prodStatus: string;
   prodPoolId: string;
   project: string;
+  qtyActual?: number;
+  qtyRemaining?: number;
+  completionRate?: number;
 }
 
 // ============================================================================
@@ -53,8 +56,13 @@ function mapRow(r: any): Order {
     prodStatus:  r.prodstatus  || r.prodStatus  || '',
     prodPoolId:  r.prodpoolid  || r.prodPoolId  || '',
     project:     r.project     || '',
+    // ── 动态扣减字段（后端 schedulablePools 附加）──────────────────────
+    qtyActual:      Number(r.qtyActual)     || 0,
+    qtyRemaining:   r.qtyRemaining  != null ? Number(r.qtyRemaining)  : undefined,
+    completionRate: r.completionRate != null ? Number(r.completionRate) : undefined,
   };
 }
+
 
 // ============================================================================
 // 主组件（ESG 专用）
